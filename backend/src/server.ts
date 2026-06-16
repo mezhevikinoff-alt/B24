@@ -1,13 +1,11 @@
 import express from 'express';
-import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, '..', 'data');
 
-app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
@@ -26,6 +24,46 @@ function writeJson(file: string, data: unknown) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+// GET /api/me — user info injected by Vibecode gateway
+app.get('/api/me', (req, res) => {
+  res.json({
+    userId: req.headers['x-vibe-user-id'] || null,
+    userName: req.headers['x-vibe-user-name'] || null,
+    portalId: req.headers['x-vibe-portal-id'] || null,
+  });
+});
+
+// POST /api/bx — proxy Bitrix24 REST API via Vibecode auth headers
+app.post('/api/bx', async (req, res) => {
+  const authorization = req.headers['x-vibe-authorization'] as string | undefined;
+  const portalId = req.headers['x-vibe-portal-id'] as string | undefined;
+  const { method, params } = req.body as { method: string; params?: Record<string, unknown> };
+
+  if (!method) {
+    res.status(400).json({ error: 'Missing method' });
+    return;
+  }
+
+  if (!authorization || !portalId) {
+    // Dev mode: return empty result so UI doesn't crash
+    res.json({ result: [], next: undefined });
+    return;
+  }
+
+  try {
+    const url = `https://${portalId}/rest/${method}`;
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...( params || {}), auth: authorization }),
+    });
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
 // Hour corrections: { "YYYY-MM": { "userId": { "YYYY-MM-DD": hours } } }
 app.get('/api/corrections/:year/:month', (req, res) => {
   const key = `${req.params.year}-${req.params.month.padStart(2, '0')}`;
@@ -41,7 +79,7 @@ app.put('/api/corrections/:year/:month', (req, res) => {
   res.json({ ok: true });
 });
 
-// Joint leads: { "YYYY-MM": { "leadId": { secondManagerId: string, note: string } } }
+// Joint leads: { "YYYY-MM": { "leadId": { secondManagerId: string } } }
 app.get('/api/joints/:year/:month', (req, res) => {
   const key = `${req.params.year}-${req.params.month.padStart(2, '0')}`;
   const data = readJson(dataFile('joints'));
@@ -68,10 +106,8 @@ app.get('*', (_req, res) => {
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
-    res.status(404).send('App not built. Run: cd frontend && npm run build && cp -r dist/* ../backend/public/');
+    res.status(200).send('App not built yet.');
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`ORK Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`ORK Server running on port ${PORT}`));

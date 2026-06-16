@@ -9,7 +9,7 @@ import { formatMonthRu } from './utils/dates';
 type Tab = 'schedule' | 'conversion' | 'summary';
 
 function Inner() {
-  const { isReady, isPortal, currentUser } = useApp();
+  const { isReady, currentUser } = useApp();
   const [tab, setTab] = useState<Tab>('schedule');
   const [date, setDate] = useState(new Date());
 
@@ -21,22 +21,7 @@ function Inner() {
       <div className="flex items-center justify-center h-screen bg-gray-50">
         <div className="text-center">
           <div className="text-4xl mb-3">⏳</div>
-          <div className="text-gray-500 font-medium">Инициализация...</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!isPortal) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-gray-50">
-        <div className="text-center max-w-sm">
-          <div className="text-5xl mb-4">🔒</div>
-          <h2 className="text-gray-800 font-bold text-xl mb-2">Требуется Битрикс24</h2>
-          <p className="text-gray-500 text-sm">
-            Откройте приложение через левое меню портала{' '}
-            <strong>credburo.bitrix24.ru</strong>
-          </p>
+          <div className="text-gray-500 font-medium">Загрузка...</div>
         </div>
       </div>
     );
