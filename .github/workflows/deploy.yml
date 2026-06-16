@@ -26,12 +26,10 @@ jobs:
 
       - name: Build frontend
         working-directory: frontend
-        run: npm ci && npm run build
-
+        run: npm install && npm run build
       - name: Build backend
         working-directory: backend
-        run: npm ci && npm run build
-
+        run: npm install && npm run build
       - name: Package app
         id: package
         run: |
@@ -42,7 +40,7 @@ jobs:
           cp backend/package-lock.json _pkg/ 2>/dev/null || true
           cp vibecode.json _pkg/
           # production deps only
-          cd _pkg && npm ci --omit=dev && cd ..
+          cd _pkg && npm install --omit=dev && cd ..
           tar czf ork-reports.tar.gz -C _pkg .
           SIZE=$(du -sh ork-reports.tar.gz | cut -f1)
           echo "size=$SIZE" >> $GITHUB_OUTPUT
