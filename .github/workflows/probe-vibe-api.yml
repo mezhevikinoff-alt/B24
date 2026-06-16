@@ -9,44 +9,111 @@ jobs:
     env:
       VIBE_KEY: vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9
       BASE: https://vibecode.bitrix24.tech/v1
+
     steps:
-      - name: GET /v1/me
-        id: me
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── /v1/me ────────────────────────────────────────────────────────────
+      - name: GET /v1/me (full headers)
         run: |
           echo "=== GET /v1/me ==="
-          curl -sv \
+          curl -si \
             -H "Authorization: Bearer $VIBE_KEY" \
-            "$BASE/me" 2>&1
+            "$BASE/me"
           echo ""
 
-      - name: Discover all endpoints
-        run: |
-          echo "=== Trying known endpoint patterns ==="
-          for EP in \
-            "apps" "projects" "services" "deployments" \
-            "sites" "applications" "app" "deploy" \
-            "containers" "functions" "workers"
-          do
-            CODE=$(curl -so /dev/null -w "%{http_code}" \
-              -H "Authorization: Bearer $VIBE_KEY" \
-              "$BASE/$EP")
-            echo "  $BASE/$EP  →  HTTP $CODE"
-          done
-
-      - name: Try GET /v1/apps
-        continue-on-error: true
+      # ── GET /v1/apps (detailed) ───────────────────────────────────────────
+      - name: GET /v1/apps (detailed)
         run: |
           echo "=== GET /v1/apps ==="
-          curl -sf \
+          curl -si \
             -H "Authorization: Bearer $VIBE_KEY" \
-            "$BASE/apps" | python3 -m json.tool || true
+            "$BASE/apps"
+          echo ""
 
-      - name: Try POST /v1/apps (create ork-reports)
-        continue-on-error: true
+      # ── POST /v1/apps — JSON minimal ────────────────────────────────────
+      - name: POST /v1/apps — JSON minimal
         run: |
-          echo "=== POST /v1/apps ==="
-          curl -sf -X POST \
+          echo "=== POST /v1/apps (JSON minimal) ==="
+          curl -si -X POST \
             -H "Authorization: Bearer $VIBE_KEY" \
             -H "Content-Type: application/json" \
-            -d '{"name":"ork-reports","runtime":"nodejs20","description":"ORK Reports"}' \
-            "$BASE/apps" | python3 -m json.tool || true
+            -d '{"name":"ork-reports","runtime":"nodejs20"}' \
+            "$BASE/apps"
+          echo ""
+
+      # ── POST /v1/apps — JSON full vibecode.json ──────────────────────────
+      - name: POST /v1/apps — JSON full (vibecode.json)
+        run: |
+          echo "=== POST /v1/apps (full vibecode.json) ==="
+          curl -si -X POST \
+            -H "Authorization: Bearer $VIBE_KEY" \
+            -H "Content-Type: application/json" \
+            -d @vibecode.json \
+            "$BASE/apps"
+          echo ""
+
+      # ── POST /v1/apps — multipart with dummy tar ────────────────────────
+      - name: POST /v1/apps — multipart form-data with archive
+        run: |
+          # Build a tiny test archive
+          mkdir -p /tmp/test-app
+          echo '{"name":"ork-reports","runtime":"nodejs20"}' > /tmp/test-app/vibecode.json
+          echo 'console.log("ok")' > /tmp/test-app/index.js
+          tar czf /tmp/test-app.tar.gz -C /tmp/test-app .
+
+          echo "=== POST /v1/apps (multipart) ==="
+          curl -si -X POST \
+            -H "Authorization: Bearer $VIBE_KEY" \
+            -F "name=ork-reports" \
+            -F "runtime=nodejs20" \
+            -F "file=@/tmp/test-app.tar.gz;type=application/gzip" \
+            "$BASE/apps"
+          echo ""
+
+      # ── After create: try sub-paths if we got an ID ───────────────────────
+      - name: GET /v1/apps after create
+        run: |
+          echo "=== GET /v1/apps after create attempts ==="
+          RESP=$(curl -sf \
+            -H "Authorization: Bearer $VIBE_KEY" \
+            "$BASE/apps")
+          echo "$RESP" | python3 -m json.tool
+          echo ""
+
+          APP_ID=$(echo "$RESP" | python3 -c \
+            "import sys,json; d=json.load(sys.stdin); \
+             items=d.get('data',[]); \
+             print(items[0].get('id','') if items else '')" 2>/dev/null || echo "")
+          echo "First app ID: '$APP_ID'"
+
+          if [ -n "$APP_ID" ]; then
+            echo ""
+            echo "=== GET /v1/apps/$APP_ID ==="
+            curl -si \
+              -H "Authorization: Bearer $VIBE_KEY" \
+              "$BASE/apps/$APP_ID"
+            echo ""
+
+            for SUB in deploy upload files archive start restart logs status; do
+              CODE=$(curl -so /dev/null -w "%{http_code}" \
+                -H "Authorization: Bearer $VIBE_KEY" \
+                "$BASE/apps/$APP_ID/$SUB")
+              echo "  /v1/apps/$APP_ID/$SUB  →  HTTP $CODE"
+            done
+          fi
+
+      # ── Scan all HTTP verbs on /v1/apps ──────────────────────────────────
+      - name: Probe HTTP verbs on /v1/apps
+        run: |
+          echo "=== HTTP verbs on /v1/apps ==="
+          for METHOD in GET POST PUT PATCH DELETE OPTIONS; do
+            CODE=$(curl -so /dev/null -w "%{http_code}" \
+              -X "$METHOD" \
+              -H "Authorization: Bearer $VIBE_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{}' \
+              "$BASE/apps")
+            echo "  $METHOD /v1/apps  →  HTTP $CODE"
+          done
