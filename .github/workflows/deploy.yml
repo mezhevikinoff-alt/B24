@@ -6,11 +6,8 @@ on:
   workflow_dispatch:
 
 env:
-  # vibe_api_... key — for Vibecode management API (apps, appUrl)
   VIBE_KEY: ${{ secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
-  # Key that OWNS the infra server — set VIBE_INFRA_KEY secret in repo settings
-  # if different from VIBE_KEY (HTTP 403 means wrong key)
-  VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY || secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
+  VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY }}
   VIBE_API_URL: https://vibecode.bitrix24.tech/v1
   EXEC_URL: https://vibecode.bitrix24.tech/v1/infra/servers/5b93084a-2124-4a42-a589-52c27075da3f/exec
   APP_SERVER: https://app-7ef23f885c9b.vibecode.bitrix24.tech
