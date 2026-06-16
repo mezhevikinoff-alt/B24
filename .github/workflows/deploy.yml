@@ -41,8 +41,8 @@ jobs:
               '{
                 source: {url: $url},
                 runtime: "node20",
-                install: "cd frontend && npm install && npm run build && cd ../backend && npm install && npm run build",
-                start: "node backend/dist/server.js",
+                install: "cd B24-*/ && cd frontend && npm install && npm run build && cd ../backend && npm install && npm run build",
+                start: "cd B24-*/ && node backend/dist/server.js",
                 port: 3000,
                 env: {NODE_ENV: "production", PORT: "3000"}
               }')" \
