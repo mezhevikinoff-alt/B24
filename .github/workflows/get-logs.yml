@@ -1,43 +1,22 @@
-name: Get Server Logs
+name: Get Server Info
 
 on:
   workflow_dispatch:
 
 jobs:
-  logs:
+  info:
     runs-on: ubuntu-latest
     env:
       VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY }}
-      LOGS_URL: https://vibecode.bitrix24.tech/v1/infra/servers/5b93084a-2124-4a42-a589-52c27075da3f/logs
+      BASE: https://vibecode.bitrix24.tech/v1
 
     steps:
-      - name: Fetch server logs
+      - name: List all infra servers
         run: |
-          echo "=== GET $LOGS_URL ==="
+          echo "=== GET /v1/infra/servers ==="
           curl -s \
             -H "Authorization: Bearer $VIBE_INFRA_KEY" \
-            "$LOGS_URL" | jq . 2>/dev/null || \
+            "$BASE/infra/servers" | jq '.data[] | {id, displayName, subdomain, status, appUrl}' 2>/dev/null || \
           curl -s \
             -H "Authorization: Bearer $VIBE_INFRA_KEY" \
-            "$LOGS_URL"
-
-      - name: Fetch server logs (last 100 lines)
-        run: |
-          echo "=== GET $LOGS_URL?tail=100 ==="
-          curl -s \
-            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
-            "$LOGS_URL?tail=100" | jq . 2>/dev/null || \
-          curl -s \
-            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
-            "$LOGS_URL?tail=100"
-
-      - name: Fetch server status
-        run: |
-          STATUS_URL="https://vibecode.bitrix24.tech/v1/infra/servers/5b93084a-2124-4a42-a589-52c27075da3f"
-          echo "=== GET $STATUS_URL ==="
-          curl -s \
-            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
-            "$STATUS_URL" | jq . 2>/dev/null || \
-          curl -s \
-            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
-            "$STATUS_URL"
+            "$BASE/infra/servers"
