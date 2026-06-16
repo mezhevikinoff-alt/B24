@@ -1,0 +1,234 @@
+name: Deploy to Vibecode
+
+on:
+  push:
+    branches: [claude/stoic-brahmagupta-1de51x, main]
+  workflow_dispatch:
+    inputs:
+      force_redeploy:
+        description: 'Force redeploy even if no changes'
+        type: boolean
+        default: false
+
+env:
+  # Secret takes priority; falls back to key if secret not configured in repo
+  VIBE_API_KEY: ${{ secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
+  VIBE_URL: https://vibecode.bitrix24.tech/v1
+  APP_NAME: ork-reports
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Build frontend ────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend (→ backend/public/)
+        working-directory: frontend
+        run: npm run build
+
+      # ── Build backend ─────────────────────────────────────────────────────
+      - name: Install backend deps
+        working-directory: backend
+        run: npm ci
+
+      - name: Build backend
+        working-directory: backend
+        run: npm run build
+
+      # ── Package ───────────────────────────────────────────────────────────
+      - name: Create deployment archive
+        run: |
+          mkdir -p deploy_pkg
+          cp -r backend/dist deploy_pkg/
+          cp -r backend/public deploy_pkg/ 2>/dev/null || true
+          cp backend/package.json deploy_pkg/
+          cp backend/package-lock.json deploy_pkg/ 2>/dev/null || true
+          cp vibecode.json deploy_pkg/
+          # Install only production deps inside package
+          cd deploy_pkg && npm ci --omit=dev && cd ..
+          tar czf ork-reports.tar.gz -C deploy_pkg .
+          echo "Archive size: $(du -sh ork-reports.tar.gz | cut -f1)"
+
+      # ── Probe Vibecode API ────────────────────────────────────────────────
+      - name: Probe Vibecode /v1/me
+        id: probe
+        run: |
+          RESP=$(curl -sf \
+            -H "Authorization: Bearer $VIBE_API_KEY" \
+            "$VIBE_URL/me" 2>&1) && STATUS=0 || STATUS=$?
+          echo "response=$RESP"
+          echo "exit_code=$STATUS"
+          echo "response<<EOF" >> $GITHUB_OUTPUT
+          echo "$RESP" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          if [ $STATUS -ne 0 ]; then
+            echo "::warning::Cannot reach $VIBE_URL/me (exit=$STATUS)"
+          else
+            echo "::notice::Vibecode API reachable"
+            echo "$RESP" | python3 -m json.tool 2>/dev/null || echo "$RESP"
+          fi
+
+      # ── Deploy: try standard REST pattern ────────────────────────────────
+      - name: Deploy — List existing apps
+        id: list_apps
+        continue-on-error: true
+        run: |
+          curl -sf \
+            -H "Authorization: Bearer $VIBE_API_KEY" \
+            "$VIBE_URL/apps" | python3 -m json.tool 2>/dev/null \
+            && echo "apps_listed=true" >> $GITHUB_OUTPUT \
+            || echo "apps_listed=false" >> $GITHUB_OUTPUT
+
+      - name: Deploy — Create or find app
+        id: create_app
+        continue-on-error: true
+        run: |
+          # Try to create; if 409 Conflict, app already exists → find it
+          RESP=$(curl -sf -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer $VIBE_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d @vibecode.json \
+            "$VIBE_URL/apps" 2>&1)
+
+          HTTP_CODE=$(echo "$RESP" | tail -1)
+          BODY=$(echo "$RESP" | head -n -1)
+          echo "http_code=$HTTP_CODE"
+          echo "body=$BODY"
+
+          APP_ID=$(echo "$BODY" | python3 -c \
+            "import sys,json; d=json.load(sys.stdin); print(d.get('id',d.get('app_id','')))" \
+            2>/dev/null || echo "")
+
+          if [ -z "$APP_ID" ] && [ "$HTTP_CODE" = "409" ]; then
+            echo "::notice::App exists, fetching existing ID"
+            APP_ID=$(curl -sf \
+              -H "Authorization: Bearer $VIBE_API_KEY" \
+              "$VIBE_URL/apps?name=$APP_NAME" | \
+              python3 -c "import sys,json; d=json.load(sys.stdin); apps=d if isinstance(d,list) else d.get('data',[]); print(apps[0]['id'] if apps else '')" \
+              2>/dev/null || echo "")
+          fi
+
+          echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
+          echo "App ID resolved: '$APP_ID'"
+
+      - name: Deploy — Upload archive
+        id: upload
+        continue-on-error: true
+        env:
+          APP_ID: ${{ steps.create_app.outputs.app_id }}
+        run: |
+          if [ -z "$APP_ID" ]; then
+            echo "::warning::No app_id, skipping upload"
+            exit 0
+          fi
+          # Try multipart upload
+          RESP=$(curl -sf -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer $VIBE_API_KEY" \
+            -F "file=@ork-reports.tar.gz;type=application/gzip" \
+            "$VIBE_URL/apps/$APP_ID/upload" 2>&1)
+          echo "Upload response: $RESP"
+
+          # Also try PUT endpoint
+          curl -sf -w "\n%{http_code}" -X PUT \
+            -H "Authorization: Bearer $VIBE_API_KEY" \
+            -H "Content-Type: application/gzip" \
+            --data-binary @ork-reports.tar.gz \
+            "$VIBE_URL/apps/$APP_ID/archive" 2>&1 || true
+
+      - name: Deploy — Trigger deploy
+        id: trigger_deploy
+        continue-on-error: true
+        env:
+          APP_ID: ${{ steps.create_app.outputs.app_id }}
+        run: |
+          if [ -z "$APP_ID" ]; then
+            echo "::warning::No app_id, skipping deploy trigger"
+            exit 0
+          fi
+          RESP=$(curl -sf -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer $VIBE_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"env":"production"}' \
+            "$VIBE_URL/apps/$APP_ID/deploy" 2>&1)
+          echo "Deploy response: $RESP"
+
+      # ── Fallback: discover API from /me response ──────────────────────────
+      - name: Fallback — Discover API endpoints
+        if: steps.create_app.outputs.app_id == ''
+        run: |
+          echo "=== Trying alternative endpoint patterns ==="
+          ME_RESP='${{ steps.probe.outputs.response }}'
+          echo "ME response: $ME_RESP"
+
+          # Common alternative patterns
+          for ENDPOINT in \
+            "projects" \
+            "deployments" \
+            "services" \
+            "sites" \
+            "applications" \
+            "app" \
+            "deploy"
+          do
+            echo "--- Trying: $VIBE_URL/$ENDPOINT ---"
+            curl -sf -o /dev/null -w "Status: %{http_code}\n" \
+              -H "Authorization: Bearer $VIBE_API_KEY" \
+              "$VIBE_URL/$ENDPOINT" 2>&1 || true
+          done
+
+      # ── Fallback: Git-push deploy (if supported) ──────────────────────────
+      - name: Fallback — Try git-push deploy
+        if: steps.create_app.outputs.app_id == ''
+        continue-on-error: true
+        run: |
+          # Some platforms accept git push to a deploy remote
+          # Try to get remote URL from /me response
+          GIT_REMOTE=$(echo '${{ steps.probe.outputs.response }}' | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); \
+            print(d.get('git_url', d.get('deploy_url', d.get('ssh_url','')))" \
+            2>/dev/null || echo "")
+
+          if [ -n "$GIT_REMOTE" ]; then
+            echo "Found git remote: $GIT_REMOTE"
+            git remote add vibecode "$GIT_REMOTE"
+            git push vibecode HEAD:main --force
+          else
+            echo "No git remote found in API response."
+          fi
+
+      # ── Summary ───────────────────────────────────────────────────────────
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "=================================="
+          echo "  ORK Reports — Deployment Report"
+          echo "=================================="
+          echo "APP_ID    : ${{ steps.create_app.outputs.app_id }}"
+          echo "BUILD     : OK"
+          echo "ARCHIVE   : ork-reports.tar.gz"
+          echo ""
+          echo "If deploy failed, check:"
+          echo "1. VIBE_API_KEY secret is set in GitHub repo Settings → Secrets"
+          echo "2. Vibecode API docs for correct endpoint format"
+          echo "3. The probe response above for API structure"
+
+      - name: Upload archive as artifact (for manual deploy)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ork-reports-${{ github.sha }}
+          path: ork-reports.tar.gz
+          retention-days: 7

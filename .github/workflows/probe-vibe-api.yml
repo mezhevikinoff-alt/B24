@@ -1,0 +1,52 @@
+name: Probe Vibecode API
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    env:
+      VIBE_KEY: vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9
+      BASE: https://vibecode.bitrix24.tech/v1
+    steps:
+      - name: GET /v1/me
+        id: me
+        run: |
+          echo "=== GET /v1/me ==="
+          curl -sv \
+            -H "Authorization: Bearer $VIBE_KEY" \
+            "$BASE/me" 2>&1
+          echo ""
+
+      - name: Discover all endpoints
+        run: |
+          echo "=== Trying known endpoint patterns ==="
+          for EP in \
+            "apps" "projects" "services" "deployments" \
+            "sites" "applications" "app" "deploy" \
+            "containers" "functions" "workers"
+          do
+            CODE=$(curl -so /dev/null -w "%{http_code}" \
+              -H "Authorization: Bearer $VIBE_KEY" \
+              "$BASE/$EP")
+            echo "  $BASE/$EP  →  HTTP $CODE"
+          done
+
+      - name: Try GET /v1/apps
+        continue-on-error: true
+        run: |
+          echo "=== GET /v1/apps ==="
+          curl -sf \
+            -H "Authorization: Bearer $VIBE_KEY" \
+            "$BASE/apps" | python3 -m json.tool || true
+
+      - name: Try POST /v1/apps (create ork-reports)
+        continue-on-error: true
+        run: |
+          echo "=== POST /v1/apps ==="
+          curl -sf -X POST \
+            -H "Authorization: Bearer $VIBE_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"ork-reports","runtime":"nodejs20","description":"ORK Reports"}' \
+            "$BASE/apps" | python3 -m json.tool || true
