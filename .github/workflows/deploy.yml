@@ -73,9 +73,9 @@ jobs:
         run: |
           CODE=$(curl -s -w "%{http_code}" -X PATCH \
             -o /tmp/patch_url.json \
-            -H "Authorization: Bearer $VIBE_KEY" \
+            -H "X-Api-Key: ${VIBE_APP_KEY:-$VIBE_KEY}" \
             -H "Content-Type: application/json" \
-            -d "{\"appUrl\":\"$APP_SERVER\"}" \
+            -d "{\"appUrl\":\"$APP_SERVER\",\"handlerUrl\":\"$APP_SERVER\"}" \
             "$VIBE_API_URL/apps/$APP_ID")
           echo "PATCH appUrl → HTTP $CODE"
           APP_URL=$(jq -r '.data.appUrl // empty' /tmp/patch_url.json 2>/dev/null | grep -v '^null$' | head -1 || true)

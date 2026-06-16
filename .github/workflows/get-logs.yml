@@ -9,7 +9,9 @@ jobs:
     env:
       VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY }}
       VIBE_APP_KEY:   ${{ secrets.VIBE_APP_KEY }}
+      VIBE_KEY:       ${{ secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
       SERVER_ID:      85110525-94ea-40a1-a611-d9dc9a7dd00d
+      APP_ID:         b6e86834-8b84-42c4-be4b-2bd2b092aa91
       BASE:           https://vibecode.bitrix24.tech/v1
 
     steps:
@@ -19,41 +21,43 @@ jobs:
           curl -s \
             -H "X-Api-Key: $VIBE_INFRA_KEY" \
             "$BASE/infra/servers/$SERVER_ID/logs" \
-            | jq -r '.data.logs[]?' 2>/dev/null || \
-          curl -s \
-            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
-            "$BASE/infra/servers/$SERVER_ID/logs" \
-            | jq -r '.data.logs[]?' 2>/dev/null || \
-          echo "Could not fetch logs"
+            | jq -r '.data.logs[]?' 2>/dev/null || echo "Could not fetch logs"
 
       - name: Server status
         run: |
           echo "=== GET /v1/infra/servers/$SERVER_ID ==="
           curl -s \
             -H "X-Api-Key: $VIBE_INFRA_KEY" \
-            "$BASE/infra/servers/$SERVER_ID" | jq '{status: .data.status, appUrl: .data.appUrl, blackholeStatus: .data.blackholeStatus, runtimeStatus: .data.runtimeStatus}' 2>/dev/null || \
-          curl -s \
-            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
-            "$BASE/infra/servers/$SERVER_ID" | jq '{status: .data.status, appUrl: .data.appUrl, blackholeStatus: .data.blackholeStatus}' 2>/dev/null
+            "$BASE/infra/servers/$SERVER_ID" \
+            | jq '{status: .data.status, appUrl: .data.appUrl, blackholeStatus: .data.blackholeStatus, runtimeStatus: .data.runtimeStatus}' 2>/dev/null
 
       - name: App registration — GET /v1/me (vibe_app key)
         run: |
-          echo "=== GET /v1/me with VIBE_APP_KEY ==="
+          echo "=== GET /v1/me with VIBE_APP_KEY (X-Api-Key) ==="
           curl -s \
-            -H "Authorization: Bearer $VIBE_APP_KEY" \
+            -H "X-Api-Key: $VIBE_APP_KEY" \
             "$BASE/me" | jq '{app: .data.app, placements: .data.placements, handlerUrl: .data.handlerUrl, appUrl: .data.appUrl}' 2>/dev/null || \
           curl -s \
-            -H "Authorization: Bearer $VIBE_APP_KEY" \
+            -H "X-Api-Key: $VIBE_APP_KEY" \
             "$BASE/me"
 
           echo ""
-          echo "=== GET /v1/apps (vibe_app key) ==="
+          echo "=== GET /v1/apps (X-Api-Key) ==="
           curl -s \
-            -H "Authorization: Bearer $VIBE_APP_KEY" \
+            -H "X-Api-Key: ${VIBE_APP_KEY:-$VIBE_KEY}" \
             "$BASE/apps" | jq '.data[] | {id, title, appUrl, handlerUrl, placements}' 2>/dev/null || \
           curl -s \
-            -H "Authorization: Bearer $VIBE_APP_KEY" \
+            -H "X-Api-Key: ${VIBE_APP_KEY:-$VIBE_KEY}" \
             "$BASE/apps"
+
+          echo ""
+          echo "=== GET /v1/apps/$APP_ID ==="
+          curl -s \
+            -H "X-Api-Key: ${VIBE_APP_KEY:-$VIBE_KEY}" \
+            "$BASE/apps/$APP_ID" | jq '{id: .data.id, title: .data.title, appUrl: .data.appUrl, handlerUrl: .data.handlerUrl, placements: .data.placements, domain: .data.domain}' 2>/dev/null || \
+          curl -s \
+            -H "X-Api-Key: ${VIBE_APP_KEY:-$VIBE_KEY}" \
+            "$BASE/apps/$APP_ID"
 
       - name: Check if app reachable at appUrl
         run: |
