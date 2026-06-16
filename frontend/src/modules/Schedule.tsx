@@ -35,6 +35,8 @@ export function ScheduleModule({ year, month }: Props) {
   const [rows, setRows] = useState<UserRow[]>([]);
   const [corrections, setCorrections] = useState<Record<string, Record<string, number>>>({});
   const [loading, setLoading] = useState(true);
+  const [loadStep, setLoadStep] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const [editCell, setEditCell] = useState<{ userId: string; dateStr: string } | null>(null);
   const [editValue, setEditValue] = useState('');
   const [saving, setSaving] = useState(false);
@@ -74,42 +76,50 @@ export function ScheduleModule({ year, month }: Props) {
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     const dateFrom = `${year}-${String(month).padStart(2, '0')}-01T00:00:00`;
     const nextMonth = month === 12 ? 1 : month + 1;
     const nextYear = month === 12 ? year + 1 : year;
     const dateTo = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01T00:00:00`;
 
     (async () => {
-      let users: BX24User[] = allUsers;
-      if (users.length === 0) {
-        users = await getUserList();
-        setAllUsers(users);
-      }
-      const userIds = users.map((u) => u.ID);
-      const [timeData, corr] = await Promise.all([
-        getTimemanReport(userIds, dateFrom, dateTo).catch(() => null),
-        getCorrections(year, month),
-      ]);
-      setCorrections(corr);
+      try {
+        let users: BX24User[] = allUsers;
+        if (users.length === 0) {
+          setLoadStep('Загрузка сотрудников...');
+          users = await getUserList();
+          setAllUsers(users);
+        }
+        const userIds = users.map((u) => u.ID);
+        setLoadStep('Загрузка расписания...');
+        const [timeData, corr] = await Promise.all([
+          getTimemanReport(userIds, dateFrom, dateTo).catch(() => null),
+          getCorrections(year, month),
+        ]);
+        setCorrections(corr);
+        setLoadStep('Расчёт данных...');
 
-      // Parse timeman report data
-      // Expected: { USERS: { "userId": { REPORT: { "YYYY-MM-DD": { DURATION: seconds } } } } }
-      const rawHours: Record<string, Record<string, number>> = {};
-      if (timeData && typeof timeData === 'object') {
-        const usersData = (timeData as any).USERS || (timeData as any).users || {};
-        for (const uid in usersData) {
-          rawHours[uid] = {};
-          const report = usersData[uid].REPORT || usersData[uid].report || {};
-          for (const dateStr in report) {
-            const entry = report[dateStr];
-            const seconds = entry.DURATION || entry.duration || entry.WORK_TIME || 0;
-            rawHours[uid][dateStr] = seconds / 3600;
+        // Expected: { USERS: { "userId": { REPORT: { "YYYY-MM-DD": { DURATION: seconds } } } } }
+        const rawHours: Record<string, Record<string, number>> = {};
+        if (timeData && typeof timeData === 'object') {
+          const usersData = (timeData as any).USERS || (timeData as any).users || {};
+          for (const uid in usersData) {
+            rawHours[uid] = {};
+            const report = usersData[uid].REPORT || usersData[uid].report || {};
+            for (const dateStr in report) {
+              const entry = report[dateStr];
+              const seconds = entry.DURATION || entry.duration || entry.WORK_TIME || 0;
+              rawHours[uid][dateStr] = seconds / 3600;
+            }
           }
         }
-      }
 
-      setRows(buildRows(users, rawHours, corr));
-      setLoading(false);
+        setRows(buildRows(users, rawHours, corr));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
+      }
     })();
   }, [year, month, allUsers, setAllUsers, buildRows]);
 
@@ -158,13 +168,8 @@ export function ScheduleModule({ year, month }: Props) {
     return 'bg-white text-gray-400';
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-48 text-gray-500">
-        Загрузка данных...
-      </div>
-    );
-  }
+  if (loading) return <LoadingView step={loadStep} />;
+  if (error) return <ErrorView message={error} onRetry={() => setError(null)} />;
 
   return (
     <div className="p-4">
@@ -303,6 +308,33 @@ export function ScheduleModule({ year, month }: Props) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function LoadingView({ step }: { step: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center h-48 gap-3">
+      <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      <div className="text-gray-500 text-sm">{step || 'Загрузка...'}</div>
+    </div>
+  );
+}
+
+function ErrorView({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="p-8 text-center">
+      <div className="text-red-500 text-4xl mb-3">⚠</div>
+      <div className="text-red-700 font-semibold mb-2">Ошибка загрузки данных</div>
+      <div className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-left font-mono break-all max-w-lg mx-auto">
+        {message}
+      </div>
+      <button
+        onClick={onRetry}
+        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+      >
+        Повторить
+      </button>
     </div>
   );
 }

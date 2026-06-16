@@ -38,6 +38,17 @@ app.get('/api/me', (req, res) => {
   });
 });
 
+// GET /api/debug — show incoming Vibecode headers (names only, safe for logs)
+app.get('/api/debug', (req, res) => {
+  const vibeHeaders: Record<string, string> = {};
+  for (const [k, v] of Object.entries(req.headers)) {
+    if (k.startsWith('x-vibe-')) {
+      vibeHeaders[k] = k === 'x-vibe-authorization' ? '[REDACTED]' : String(v);
+    }
+  }
+  res.json({ headers: vibeHeaders, env: { VIBE_APP_KEY: VIBE_APP_KEY ? '[SET]' : '[MISSING]' } });
+});
+
 // POST /api/bx — proxy Bitrix24 REST API via Vibecode auth headers
 app.post('/api/bx', async (req, res) => {
   const authorization = req.headers['x-vibe-authorization'] as string | undefined;
@@ -50,21 +61,29 @@ app.post('/api/bx', async (req, res) => {
   }
 
   if (!authorization || !portalId) {
-    // Dev mode: return empty result so UI doesn't crash
+    console.warn(`[bx] ${method}: no auth headers (authorization=${!!authorization}, portalId=${portalId})`);
     res.json({ result: [], next: undefined });
     return;
   }
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
   try {
     const url = `https://${portalId}/rest/${method}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...( params || {}), auth: authorization }),
+      body: JSON.stringify({ ...(params || {}), auth: authorization }),
+      signal: controller.signal,
     });
+    clearTimeout(timer);
     const data = await response.json();
+    if (data.error) console.error(`[bx] ${method} → error: ${data.error} ${data.error_description || ''}`);
+    else console.log(`[bx] ${method} → HTTP ${response.status}, result count: ${Array.isArray(data.result) ? data.result.length : '?'}`);
     res.json(data);
   } catch (err) {
+    clearTimeout(timer);
+    console.error(`[bx] ${method} → exception:`, err);
     res.status(500).json({ error: String(err) });
   }
 });

@@ -19,6 +19,8 @@ export function SummaryModule({ year, month }: Props) {
   const { allUsers, setAllUsers } = useApp();
   const [rows, setRows] = useState<ManagerMonth[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadStep, setLoadStep] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const [deptConvRate, setDeptConvRate] = useState(0);
 
   const { from, to } = getMonthRange(year, month);
@@ -26,156 +28,165 @@ export function SummaryModule({ year, month }: Props) {
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     (async () => {
-      let users: BX24User[] = allUsers;
-      if (users.length === 0) {
-        users = await getUserList();
-        setAllUsers(users);
-      }
-      const userIds = users.map((u) => u.ID);
-
-      const [allLeads, timeData, corrections, joints, categories] = await Promise.all([
-        getLeadsForMonth(from, to),
-        getTimemanReport(userIds, from.slice(0, 10), to.slice(0, 10)).catch(() => null),
-        getCorrections(year, month),
-        getJoints(year, month),
-        getDealCategories().catch(() => []),
-      ]);
-
-      // Pipeline identification
-      const bankIds = new Set<string>();
-      categories.forEach((c: { ID: string; NAME: string }) => {
-        if (c.NAME.toLowerCase().includes('банкрот')) bankIds.add(c.ID);
-      });
-
-      // Filter leads (system IDs + name-matched IDs)
-      const excludedIds = await resolveExcludedStatusIds();
-      const filtered = allLeads.filter((l: any) => !excludedIds.has(l.STATUS_ID));
-      const converted = filtered.filter((l: any) => l.DATE_CONVERT && l.DATE_CONVERT.length > 0);
-
-      // Dept-level conversion rate
-      const deptRate = filtered.length > 0 ? converted.length / filtered.length : 0;
-      setDeptConvRate(deptRate);
-
-      // Get deals for converted leads
-      const convertedLeadIds = converted.map((l: any) => l.ID);
-      const deals = await getDealsByLeadIds(convertedLeadIds).catch(() => []);
-      const dealByLead: Record<string, { ID: string; CATEGORY_ID: string }> = {};
-      deals.forEach((d: any) => { if (d.LEAD_ID) dealByLead[d.LEAD_ID] = d; });
-
-      // Parse timeman
-      const rawHours: Record<string, Record<string, number>> = {};
-      if (timeData && typeof timeData === 'object') {
-        const usersData = (timeData as any).USERS || (timeData as any).users || {};
-        for (const uid in usersData) {
-          rawHours[uid] = {};
-          const report = usersData[uid].REPORT || usersData[uid].report || {};
-          for (const dateStr in report) {
-            const entry = report[dateStr];
-            const seconds = entry.DURATION || entry.duration || entry.WORK_TIME || 0;
-            rawHours[uid][dateStr] = seconds / 3600;
-          }
+      try {
+        let users: BX24User[] = allUsers;
+        if (users.length === 0) {
+          setLoadStep('Загрузка сотрудников...');
+          users = await getUserList();
+          setAllUsers(users);
         }
-      }
+        const userIds = users.map((u) => u.ID);
 
-      // Build per-manager stats
-      const managerRows: ManagerMonth[] = users.map((user) => {
-        // Hours
-        const userRaw = rawHours[user.ID] || {};
-        const userCorr = corrections[user.ID] || {};
-        let totalHours = 0;
-        let totalDays = 0;
-        for (const date of days) {
-          const dateStr = formatDate(date);
-          let h = 0;
-          if (dateStr in userCorr) {
-            h = userCorr[dateStr];
-          } else if (dateStr in userRaw) {
-            h = Math.min(userRaw[dateStr], MAX_HOURS_PER_DAY);
-          }
-          if (h > 0) {
-            totalHours += h;
-            totalDays += 1;
-          }
-        }
-        const salaryBase = totalHours * RATE_PER_HOUR;
+        setLoadStep('Загрузка данных (лиды, расписание, сделки)...');
+        const [allLeads, timeData, corrections, joints, categories] = await Promise.all([
+          getLeadsForMonth(from, to),
+          getTimemanReport(userIds, from.slice(0, 10), to.slice(0, 10)).catch(() => null),
+          getCorrections(year, month),
+          getJoints(year, month),
+          getDealCategories().catch(() => []),
+        ]);
 
-        // Leads: count leads in work where this manager is primary or secondary
-        const managerLeads = filtered.filter((l: any) => {
-          if (l.ASSIGNED_BY_ID === user.ID) return true;
-          const joint = joints[l.ID];
-          return joint?.secondManagerId === user.ID;
+        // Pipeline identification
+        const bankIds = new Set<string>();
+        categories.forEach((c: { ID: string; NAME: string }) => {
+          if (c.NAME.toLowerCase().includes('банкрот')) bankIds.add(c.ID);
         });
-        const totalLeadsInWork = managerLeads.length;
 
-        // Converted leads contributions
-        let sales300Fund = 0;
-        let sales300Count = 0;
-        let sales200Fund = 0;
-        let sales200Count = 0;
-        let bankruptcyFund = 0;
-        let bankruptcyCount = 0;
-        let totalConverted = 0;
+        setLoadStep('Фильтрация статусов...');
+        const excludedIds = await resolveExcludedStatusIds();
+        const filtered = allLeads.filter((l: any) => !excludedIds.has(l.STATUS_ID));
+        const converted = filtered.filter((l: any) => l.DATE_CONVERT && l.DATE_CONVERT.length > 0);
 
-        for (const lead of converted as any[]) {
-          const deal = dealByLead[lead.ID];
-          const catId = deal?.CATEGORY_ID || '0';
-          const pipeline = bankIds.has(catId) ? 'bankruptcy' : 'sales';
-          const hours = calcProcessingHours(lead.DATE_CREATE, lead.DATE_CONVERT);
-          const baseFund = calcBaseFund(pipeline, hours);
-          const joint = joints[lead.ID];
-          const hasJoint = !!joint?.secondManagerId;
+        // Dept-level conversion rate
+        const deptRate = filtered.length > 0 ? converted.length / filtered.length : 0;
+        setDeptConvRate(deptRate);
 
-          const isPrimary = lead.ASSIGNED_BY_ID === user.ID;
-          const isSecondary = hasJoint && joint.secondManagerId === user.ID;
+        setLoadStep('Загрузка сделок...');
+        const convertedLeadIds = converted.map((l: any) => l.ID);
+        const deals = await getDealsByLeadIds(convertedLeadIds).catch(() => []);
+        const dealByLead: Record<string, { ID: string; CATEGORY_ID: string }> = {};
+        deals.forEach((d: any) => { if (d.LEAD_ID) dealByLead[d.LEAD_ID] = d; });
 
-          if (!isPrimary && !isSecondary) continue;
-
-          totalConverted++;
-          const share = isPrimary ? (hasJoint ? 0.7 : 1.0) : 0.3;
-          const amount = baseFund * share;
-
-          if (pipeline === 'bankruptcy') {
-            bankruptcyCount++;
-            bankruptcyFund += amount;
-          } else if (baseFund === 300) {
-            sales300Count++;
-            sales300Fund += amount;
-          } else {
-            sales200Count++;
-            sales200Fund += amount;
+        // Parse timeman
+        const rawHours: Record<string, Record<string, number>> = {};
+        if (timeData && typeof timeData === 'object') {
+          const usersData = (timeData as any).USERS || (timeData as any).users || {};
+          for (const uid in usersData) {
+            rawHours[uid] = {};
+            const report = usersData[uid].REPORT || usersData[uid].report || {};
+            for (const dateStr in report) {
+              const entry = report[dateStr];
+              const seconds = entry.DURATION || entry.duration || entry.WORK_TIME || 0;
+              rawHours[uid][dateStr] = seconds / 3600;
+            }
           }
         }
 
-        const conversionRate = totalLeadsInWork > 0 ? totalConverted / totalLeadsInWork : 0;
-        const calc = calcManagerSalary(totalHours, sales300Fund, sales200Fund, bankruptcyFund, deptRate);
+        setLoadStep('Расчёт мотивации...');
+        // Build per-manager stats
+        const managerRows: ManagerMonth[] = users.map((user) => {
+          // Hours
+          const userRaw = rawHours[user.ID] || {};
+          const userCorr = corrections[user.ID] || {};
+          let totalHours = 0;
+          let totalDays = 0;
+          for (const date of days) {
+            const dateStr = formatDate(date);
+            let h = 0;
+            if (dateStr in userCorr) {
+              h = userCorr[dateStr];
+            } else if (dateStr in userRaw) {
+              h = Math.min(userRaw[dateStr], MAX_HOURS_PER_DAY);
+            }
+            if (h > 0) {
+              totalHours += h;
+              totalDays += 1;
+            }
+          }
+          const salaryBase = totalHours * RATE_PER_HOUR;
 
-        return {
-          userId: user.ID,
-          user,
-          totalHours,
-          totalDays,
-          salaryBase,
-          totalLeadsInWork,
-          totalConverted,
-          conversionRate,
-          sales300Count,
-          sales300Fund,
-          sales300Coeff: calc.sales300Coeff,
-          sales300Total: calc.sales300Total,
-          sales200Count,
-          sales200Fund,
-          sales200Coeff: calc.sales200Coeff,
-          sales200Total: calc.sales200Total,
-          bankruptcyCount,
-          bankruptcyFund,
-          totalBonus: calc.totalBonus,
-          totalSalary: calc.totalSalary,
-        };
-      });
+          // Leads: count leads in work where this manager is primary or secondary
+          const managerLeads = filtered.filter((l: any) => {
+            if (l.ASSIGNED_BY_ID === user.ID) return true;
+            const joint = joints[l.ID];
+            return joint?.secondManagerId === user.ID;
+          });
+          const totalLeadsInWork = managerLeads.length;
 
-      setRows(managerRows);
-      setLoading(false);
+          // Converted leads contributions
+          let sales300Fund = 0;
+          let sales300Count = 0;
+          let sales200Fund = 0;
+          let sales200Count = 0;
+          let bankruptcyFund = 0;
+          let bankruptcyCount = 0;
+          let totalConverted = 0;
+
+          for (const lead of converted as any[]) {
+            const deal = dealByLead[lead.ID];
+            const catId = deal?.CATEGORY_ID || '0';
+            const pipeline = bankIds.has(catId) ? 'bankruptcy' : 'sales';
+            const hours = calcProcessingHours(lead.DATE_CREATE, lead.DATE_CONVERT);
+            const baseFund = calcBaseFund(pipeline, hours);
+            const joint = joints[lead.ID];
+            const hasJoint = !!joint?.secondManagerId;
+
+            const isPrimary = lead.ASSIGNED_BY_ID === user.ID;
+            const isSecondary = hasJoint && joint.secondManagerId === user.ID;
+
+            if (!isPrimary && !isSecondary) continue;
+
+            totalConverted++;
+            const share = isPrimary ? (hasJoint ? 0.7 : 1.0) : 0.3;
+            const amount = baseFund * share;
+
+            if (pipeline === 'bankruptcy') {
+              bankruptcyCount++;
+              bankruptcyFund += amount;
+            } else if (baseFund === 300) {
+              sales300Count++;
+              sales300Fund += amount;
+            } else {
+              sales200Count++;
+              sales200Fund += amount;
+            }
+          }
+
+          const conversionRate = totalLeadsInWork > 0 ? totalConverted / totalLeadsInWork : 0;
+          const calc = calcManagerSalary(totalHours, sales300Fund, sales200Fund, bankruptcyFund, deptRate);
+
+          return {
+            userId: user.ID,
+            user,
+            totalHours,
+            totalDays,
+            salaryBase,
+            totalLeadsInWork,
+            totalConverted,
+            conversionRate,
+            sales300Count,
+            sales300Fund,
+            sales300Coeff: calc.sales300Coeff,
+            sales300Total: calc.sales300Total,
+            sales200Count,
+            sales200Fund,
+            sales200Coeff: calc.sales200Coeff,
+            sales200Total: calc.sales200Total,
+            bankruptcyCount,
+            bankruptcyFund,
+            totalBonus: calc.totalBonus,
+            totalSalary: calc.totalSalary,
+          };
+        });
+
+        setRows(managerRows);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
+      }
     })();
   }, [year, month, from, to, allUsers, setAllUsers, days]);
 
@@ -267,9 +278,8 @@ export function SummaryModule({ year, month }: Props) {
     XLSX.writeFile(wb, `ORK_Отчёт_${formatMonthRu(year, month).replace(' ', '_')}.xlsx`);
   };
 
-  if (loading) {
-    return <div className="flex items-center justify-center h-48 text-gray-500">Загрузка...</div>;
-  }
+  if (loading) return <LoadingView step={loadStep} />;
+  if (error) return <ErrorView message={error} onRetry={() => { setError(null); setLoading(true); }} />;
 
   const pctFast = (r: ManagerMonth) =>
     r.sales300Count + r.sales200Count > 0
@@ -404,6 +414,33 @@ export function SummaryModule({ year, month }: Props) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+function LoadingView({ step }: { step: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center h-48 gap-3">
+      <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      <div className="text-gray-500 text-sm">{step || 'Загрузка...'}</div>
+    </div>
+  );
+}
+
+function ErrorView({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="p-8 text-center">
+      <div className="text-red-500 text-4xl mb-3">⚠</div>
+      <div className="text-red-700 font-semibold mb-2">Ошибка загрузки данных</div>
+      <div className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-left font-mono break-all max-w-lg mx-auto">
+        {message}
+      </div>
+      <button
+        onClick={onRetry}
+        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+      >
+        Повторить
+      </button>
     </div>
   );
 }

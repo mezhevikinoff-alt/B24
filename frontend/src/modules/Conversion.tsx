@@ -20,6 +20,8 @@ export function ConversionModule({ year, month }: Props) {
   const [excludedCount, setExcludedCount] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadStep, setLoadStep] = useState('');
+  const [error, setError] = useState<string | null>(null);
   const [editingJoint, setEditingJoint] = useState<string | null>(null);
   const [jointValue, setJointValue] = useState('');
   const [usersMap, setUsersMap] = useState<Record<string, BX24User>>({});
@@ -29,80 +31,86 @@ export function ConversionModule({ year, month }: Props) {
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     (async () => {
-      let users: BX24User[] = allUsers;
-      if (users.length === 0) {
-        users = await getUserList();
-        setAllUsers(users);
+      try {
+        let users: BX24User[] = allUsers;
+        if (users.length === 0) {
+          setLoadStep('Загрузка сотрудников...');
+          users = await getUserList();
+          setAllUsers(users);
+        }
+        const uMap: Record<string, BX24User> = {};
+        users.forEach((u) => { uMap[u.ID] = u; });
+        setUsersMap(uMap);
+
+        setLoadStep('Загрузка категорий сделок...');
+        const categories = await getDealCategories().catch(() => []);
+        const bankIds = new Set<string>();
+        categories.forEach((c: { ID: string; NAME: string }) => {
+          if (c.NAME.toLowerCase().includes('банкрот')) bankIds.add(c.ID);
+        });
+        setBankruptcyCatIds(bankIds);
+
+        setLoadStep('Загрузка лидов...');
+        const [allLeads, joints] = await Promise.all([
+          getLeadsForMonth(from, to),
+          getJoints(year, month),
+        ]);
+
+        const total = allLeads.length;
+        setTotalCount(total);
+
+        setLoadStep('Фильтрация статусов...');
+        const excludedIds = await resolveExcludedStatusIds();
+        const filteredLeads: Lead[] = allLeads.filter(
+          (l: Lead) => !excludedIds.has(l.STATUS_ID),
+        );
+        setExcludedCount(total - filteredLeads.length);
+
+        const convertedLeads: Lead[] = filteredLeads.filter(
+          (l: Lead) => l.DATE_CONVERT && l.DATE_CONVERT.length > 0,
+        );
+
+        setLoadStep('Загрузка сделок...');
+        const leadIds = convertedLeads.map((l) => l.ID);
+        const deals = await getDealsByLeadIds(leadIds).catch(() => []);
+        const dealByLead: Record<string, { ID: string; CATEGORY_ID: string }> = {};
+        deals.forEach((d: { ID: string; LEAD_ID?: string; CATEGORY_ID: string }) => {
+          if (d.LEAD_ID) dealByLead[d.LEAD_ID] = d;
+        });
+
+        setLoadStep('Расчёт конверсии...');
+        const built: ConversionEntry[] = convertedLeads.map((lead) => {
+          const deal = dealByLead[lead.ID];
+          const catId = deal?.CATEGORY_ID || '0';
+          const pipeline: Pipeline = bankIds.has(catId) ? 'bankruptcy' : 'sales';
+          const hours = calcProcessingHours(lead.DATE_CREATE, lead.DATE_CONVERT!);
+          const baseFund = calcBaseFund(pipeline, hours);
+          const joint = joints[lead.ID];
+          const hasJoint = !!joint?.secondManagerId;
+          const primaryAmount = hasJoint ? baseFund * 0.7 : baseFund;
+          const secondaryAmount = hasJoint ? baseFund * 0.3 : 0;
+
+          return {
+            lead,
+            dealId: deal?.ID,
+            pipeline,
+            processingHours: hours,
+            baseFund,
+            primaryManagerId: lead.ASSIGNED_BY_ID,
+            secondManagerId: joint?.secondManagerId,
+            primaryAmount,
+            secondaryAmount,
+          };
+        });
+
+        setEntries(built);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
       }
-      const uMap: Record<string, BX24User> = {};
-      users.forEach((u) => { uMap[u.ID] = u; });
-      setUsersMap(uMap);
-
-      // Get deal categories to identify bankruptcy pipeline
-      const categories = await getDealCategories().catch(() => []);
-      const bankIds = new Set<string>();
-      categories.forEach((c: { ID: string; NAME: string }) => {
-        if (c.NAME.toLowerCase().includes('банкрот')) bankIds.add(c.ID);
-      });
-      setBankruptcyCatIds(bankIds);
-
-      // Load leads for month
-      const [allLeads, joints] = await Promise.all([
-        getLeadsForMonth(from, to),
-        getJoints(year, month),
-      ]);
-
-      const total = allLeads.length;
-      setTotalCount(total);
-
-      // Filter excluded statuses (system IDs + name-matched IDs)
-      const excludedIds = await resolveExcludedStatusIds();
-      const filteredLeads: Lead[] = allLeads.filter(
-        (l: Lead) => !excludedIds.has(l.STATUS_ID),
-      );
-      setExcludedCount(total - filteredLeads.length);
-
-      // Get only converted leads (DATE_CONVERT not null)
-      const convertedLeads: Lead[] = filteredLeads.filter(
-        (l: Lead) => l.DATE_CONVERT && l.DATE_CONVERT.length > 0,
-      );
-
-      // Get deals for converted leads to determine pipeline
-      const leadIds = convertedLeads.map((l) => l.ID);
-      const deals = await getDealsByLeadIds(leadIds).catch(() => []);
-      const dealByLead: Record<string, { ID: string; CATEGORY_ID: string }> = {};
-      deals.forEach((d: { ID: string; LEAD_ID?: string; CATEGORY_ID: string }) => {
-        if (d.LEAD_ID) dealByLead[d.LEAD_ID] = d;
-      });
-
-      // Build entries
-      const built: ConversionEntry[] = convertedLeads.map((lead) => {
-        const deal = dealByLead[lead.ID];
-        const catId = deal?.CATEGORY_ID || '0';
-        const pipeline: Pipeline = bankIds.has(catId) ? 'bankruptcy' : 'sales';
-        const hours = calcProcessingHours(lead.DATE_CREATE, lead.DATE_CONVERT!);
-        const baseFund = calcBaseFund(pipeline, hours);
-        const joint = joints[lead.ID];
-        const hasJoint = !!joint?.secondManagerId;
-        const primaryAmount = hasJoint ? baseFund * 0.7 : baseFund;
-        const secondaryAmount = hasJoint ? baseFund * 0.3 : 0;
-
-        return {
-          lead,
-          dealId: deal?.ID,
-          pipeline,
-          processingHours: hours,
-          baseFund,
-          primaryManagerId: lead.ASSIGNED_BY_ID,
-          secondManagerId: joint?.secondManagerId,
-          primaryAmount,
-          secondaryAmount,
-        };
-      });
-
-      setEntries(built);
-      setLoading(false);
     })();
   }, [year, month, from, to, allUsers, setAllUsers]);
 
@@ -134,9 +142,8 @@ export function ConversionModule({ year, month }: Props) {
     return `${u.LAST_NAME} ${u.NAME}`;
   };
 
-  if (loading) {
-    return <div className="flex items-center justify-center h-48 text-gray-500">Загрузка...</div>;
-  }
+  if (loading) return <LoadingView step={loadStep} />;
+  if (error) return <ErrorView message={error} onRetry={() => { setError(null); setLoading(true); }} />;
 
   return (
     <div className="p-4">
@@ -285,6 +292,33 @@ export function ConversionModule({ year, month }: Props) {
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-red-200 inline-block" /> Продажи &gt; 18ч (200₽)</span>
         <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-purple-200 inline-block" /> Банкротство (200₽ фикс)</span>
       </div>
+    </div>
+  );
+}
+
+function LoadingView({ step }: { step: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center h-48 gap-3">
+      <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      <div className="text-gray-500 text-sm">{step || 'Загрузка...'}</div>
+    </div>
+  );
+}
+
+function ErrorView({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="p-8 text-center">
+      <div className="text-red-500 text-4xl mb-3">⚠</div>
+      <div className="text-red-700 font-semibold mb-2">Ошибка загрузки данных</div>
+      <div className="text-red-600 text-sm bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-left font-mono break-all max-w-lg mx-auto">
+        {message}
+      </div>
+      <button
+        onClick={onRetry}
+        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium"
+      >
+        Повторить
+      </button>
     </div>
   );
 }
