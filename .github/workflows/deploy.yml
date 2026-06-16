@@ -8,9 +8,9 @@ on:
 env:
   VIBE_KEY:       ${{ secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
   VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY }}
-  DEPLOY_URL:     https://vibecode.bitrix24.tech/v1/infra/servers/5b93084a-2124-4a42-a589-52c27075da3f/deploy
+  DEPLOY_URL:     https://vibecode.bitrix24.tech/v1/infra/servers/516352d8-4648-454b-a885-1b6f496ee4eb/deploy
   VIBE_API_URL:   https://vibecode.bitrix24.tech/v1
-  APP_SERVER:     https://app-7ef23f885c9b.vibecode.bitrix24.tech
+  APP_SERVER:     https://app-5bd5009c58b5.vibecode.bitrix24.tech
   APP_ID:         b6e86834-8b84-42c4-be4b-2bd2b092aa91
 
 jobs:

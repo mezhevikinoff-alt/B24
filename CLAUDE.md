@@ -8,10 +8,9 @@
 - Деплой: автоматически через GitHub Actions при push в ветку main
 
 ## Deploy API
-- Endpoint: `POST https://vibecode.bitrix24.tech/v1/infra/servers/5b93084a-2124-4a42-a589-52c27075da3f/exec`
-- Используется для выполнения shell-команд на сервере (git pull + build + pm2 restart)
-- Auth: `Authorization: Bearer <VIBE_KEY>`
-- Body: `{"command": "<shell command>"}`
+- Endpoint: `POST https://vibecode.bitrix24.tech/v1/infra/servers/516352d8-4648-454b-a885-1b6f496ee4eb/deploy`
+- Сервер "ОРК Статистика": `https://app-5bd5009c58b5.vibecode.bitrix24.tech`
+- Auth: `Authorization: Bearer <VIBE_INFRA_KEY>` (GitHub secret)
 
 ## Что делает приложение
 - График учёта рабочего времени (данные из timeman Битрикс24)
