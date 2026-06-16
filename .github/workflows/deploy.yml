@@ -17,68 +17,17 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed for creating releases
+      contents: write
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # ── Build ─────────────────────────────────────────────────────────────
-      - name: Build frontend
-        working-directory: frontend
-        run: npm install && npm run build
-
-      - name: Build backend
-        working-directory: backend
-        run: npm install && npm run build
-
-      - name: Package
-        id: package
-        run: |
-          mkdir -p _pkg
-          cp -r backend/dist    _pkg/
-          cp -r backend/public  _pkg/ 2>/dev/null || true
-          cp backend/package.json _pkg/
-          cp backend/package-lock.json _pkg/ 2>/dev/null || true
-          cd _pkg && npm install --omit=dev --silent && cd ..
-          tar czf ork-reports.tar.gz -C _pkg .
-          echo "size=$(du -sh ork-reports.tar.gz | cut -f1)" >> $GITHUB_OUTPUT
-          echo "Archive: $(du -sh ork-reports.tar.gz | cut -f1)"
-
-      # ── Publish pre-built archive as GitHub Release asset ─────────────────
-      # This gives a stable public URL that Vibecode can download without auth
-      - name: Publish release asset
-        id: release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="deploy-latest"
-
-          # Delete old release if exists (ignore errors)
-          gh release delete "$TAG" --repo "${{ github.repository }}" --yes 2>/dev/null || true
-          git push origin ":refs/tags/$TAG" 2>/dev/null || true
-
-          # Create new release with the archive
-          gh release create "$TAG" ork-reports.tar.gz \
-            --repo "${{ github.repository }}" \
-            --title "Latest deploy" \
-            --notes "Auto-deployed from ${{ github.ref_name }} @ ${{ github.sha }}" \
-            --latest=false
-
-          ASSET_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/ork-reports.tar.gz"
-          echo "asset_url=$ASSET_URL" >> $GITHUB_OUTPUT
-          echo "Asset URL: $ASSET_URL"
-
       # ── Deploy to Vibecode via /deploy API ────────────────────────────────
       - name: Deploy to Vibecode server
         id: deploy
         run: |
-          SOURCE_URL="${{ steps.release.outputs.asset_url }}"
+          SOURCE_URL="https://github.com/${{ github.repository }}/archive/refs/heads/${{ github.ref_name }}.tar.gz"
           echo "=== POST $DEPLOY_URL?stream=false ==="
           echo "Source: $SOURCE_URL"
 
@@ -92,8 +41,8 @@ jobs:
               '{
                 source: {url: $url},
                 runtime: "node20",
-                install: "npm install --omit=dev --silent",
-                start: "node dist/server.js",
+                install: "cd frontend && npm install && npm run build && cd ../backend && npm install && npm run build",
+                start: "node backend/dist/server.js",
                 port: 3000,
                 env: {NODE_ENV: "production", PORT: "3000"}
               }')" \
@@ -104,13 +53,13 @@ jobs:
           echo "deploy_code=$CODE" >> $GITHUB_OUTPUT
 
           if [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]]; then
-            INNER=$(jq -r '.success' /tmp/deploy.json 2>/dev/null || echo "")
-            if [[ "$INNER" == "true" ]]; then
+            if [[ "$(jq -r '.success' /tmp/deploy.json 2>/dev/null)" == "true" ]]; then
               echo "deployed=true" >> $GITHUB_OUTPUT
               echo "::notice::Deployed successfully"
             else
               echo "deployed=false" >> $GITHUB_OUTPUT
-              echo "::error::Deploy API returned success=false: $(jq -r '.error.message // empty' /tmp/deploy.json)"
+              ERR=$(jq -r '.error | "\(.code): \(.message) [step: \(.step)]"' /tmp/deploy.json 2>/dev/null || true)
+              echo "::error::Deploy failed — $ERR"
             fi
           else
             echo "deployed=false" >> $GITHUB_OUTPUT
@@ -129,7 +78,6 @@ jobs:
             -d "{\"appUrl\":\"$APP_SERVER\"}" \
             "$VIBE_API_URL/apps/$APP_ID")
           echo "PATCH appUrl → HTTP $CODE"
-          cat /tmp/patch_url.json | jq '.data.appUrl' 2>/dev/null || true
           APP_URL=$(jq -r '.data.appUrl // empty' /tmp/patch_url.json 2>/dev/null | grep -v '^null$' | head -1 || true)
           echo "app_url=${APP_URL:-$APP_SERVER}" >> $GITHUB_OUTPUT
 
@@ -140,14 +88,12 @@ jobs:
           DEPLOYED:  ${{ steps.deploy.outputs.deployed }}
           HTTP_CODE: ${{ steps.deploy.outputs.deploy_code }}
           APP_URL:   ${{ steps.set_url.outputs.app_url }}
-          ASSET_URL: ${{ steps.release.outputs.asset_url }}
         run: |
           FINAL_URL="${APP_URL:-$APP_SERVER}"
           echo "================================================================"
           echo "  ОРК Отчёты — Deploy Summary"
           echo "================================================================"
           echo "  Deploy status  : ${DEPLOYED:-false} (HTTP ${HTTP_CODE:-?})"
-          echo "  Archive URL    : ${ASSET_URL:-<не создан>}"
           echo "  App server     : $APP_SERVER"
           echo "  appUrl         : ${APP_URL:-<не установлен>}"
           echo "================================================================"
