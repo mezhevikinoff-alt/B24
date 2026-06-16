@@ -27,179 +27,184 @@ jobs:
       - name: Build frontend
         working-directory: frontend
         run: npm install && npm run build
+
       - name: Build backend
         working-directory: backend
         run: npm install && npm run build
+
       - name: Package app
         id: package
         run: |
           mkdir -p _pkg
-          cp -r backend/dist  _pkg/
+          cp -r backend/dist   _pkg/
           cp -r backend/public _pkg/ 2>/dev/null || true
           cp backend/package.json _pkg/
           cp backend/package-lock.json _pkg/ 2>/dev/null || true
           cp vibecode.json _pkg/
-          # production deps only
           cd _pkg && npm install --omit=dev && cd ..
           tar czf ork-reports.tar.gz -C _pkg .
           SIZE=$(du -sh ork-reports.tar.gz | cut -f1)
           echo "size=$SIZE" >> $GITHUB_OUTPUT
-          echo "::notice::Archive: $SIZE"
+          echo "::notice::Archive ready: $SIZE"
 
-      # ── Find or create app via GET + POST /v1/apps ────────────────────────
-      - name: Find existing app
-        id: find
+      # ── Find or create app ────────────────────────────────────────────────
+      - name: Find or create app
+        id: app
         run: |
-          RESP=$(curl -sf \
+          # ── 1. GET list ──────────────────────────────────────────────────
+          echo "=== GET /v1/apps ==="
+          HTTP=$(curl -s -w "\n%{http_code}" \
+            -o /tmp/apps_list.json \
             -H "Authorization: Bearer $VIBE_KEY" \
             "$VIBE_URL/apps")
-          echo "GET /v1/apps → $RESP"
+          CODE=$(echo "$HTTP" | tail -1)
+          echo "HTTP $CODE"
+          cat /tmp/apps_list.json | jq . 2>/dev/null || cat /tmp/apps_list.json
 
-          APP_ID=$(echo "$RESP" | jq -r --arg n "$APP_NAME" \
-            '.data[] | select(.name == $n) | .id // empty' 2>/dev/null | head -1 || echo "")
-          echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
+          APP_ID=$(jq -r --arg n "$APP_NAME" \
+            '.data[] | select(.name == $n) | .id // empty' \
+            /tmp/apps_list.json 2>/dev/null | head -1)
           echo "Existing app_id: '$APP_ID'"
 
-      - name: Create app (if not exists)
-        id: create
-        if: steps.find.outputs.app_id == ''
-        run: |
-          echo "=== Creating app via POST /v1/apps ==="
-
-          # Attempt 1: JSON body
-          RESP=$(curl -si -X POST \
-            -H "Authorization: Bearer $VIBE_KEY" \
-            -H "Content-Type: application/json" \
-            -d @vibecode.json \
-            "$VIBE_URL/apps")
-          HTTP_CODE=$(echo "$RESP" | grep -i "^HTTP" | tail -1 | awk '{print $2}')
-          BODY=$(echo "$RESP" | sed '/^\r$/q' | tail -1; echo "$RESP" | awk '/^\r$/{found=1; next} found{print}')
-          echo "HTTP $HTTP_CODE — Body: $BODY"
-
-          APP_ID=$(echo "$BODY" | python3 -c \
-            "import sys,json; d=json.load(sys.stdin); print(d.get('id', d.get('data',{}).get('id','')))" \
-            2>/dev/null || echo "")
-
-          # Attempt 2: multipart with archive
+          # ── 2. Create if not found ───────────────────────────────────────
           if [ -z "$APP_ID" ]; then
-            echo "JSON create gave no ID, trying multipart..."
-            RESP2=$(curl -si -X POST \
+            echo ""
+            echo "=== POST /v1/apps — attempt 1: minimal JSON ==="
+            CODE=$(curl -s -w "%{http_code}" -X POST \
+              -o /tmp/create1.json \
+              -H "Authorization: Bearer $VIBE_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\":\"$APP_NAME\",\"runtime\":\"nodejs20\",\"entrypoint\":\"dist/server.js\"}" \
+              "$VIBE_URL/apps")
+            echo "HTTP $CODE | $(cat /tmp/create1.json)"
+            APP_ID=$(jq -r '.id // .data.id // .app.id // .result.id // empty' \
+              /tmp/create1.json 2>/dev/null | head -1)
+          fi
+
+          if [ -z "$APP_ID" ]; then
+            echo ""
+            echo "=== POST /v1/apps — attempt 2: multipart form ==="
+            CODE=$(curl -s -w "%{http_code}" -X POST \
+              -o /tmp/create2.json \
+              -H "Authorization: Bearer $VIBE_KEY" \
+              -F "name=$APP_NAME" \
+              -F "runtime=nodejs20" \
+              -F "entrypoint=dist/server.js" \
+              "$VIBE_URL/apps")
+            echo "HTTP $CODE | $(cat /tmp/create2.json)"
+            APP_ID=$(jq -r '.id // .data.id // .app.id // .result.id // empty' \
+              /tmp/create2.json 2>/dev/null | head -1)
+          fi
+
+          if [ -z "$APP_ID" ]; then
+            echo ""
+            echo "=== POST /v1/apps — attempt 3: multipart + archive ==="
+            CODE=$(curl -s -w "%{http_code}" -X POST \
+              -o /tmp/create3.json \
               -H "Authorization: Bearer $VIBE_KEY" \
               -F "name=$APP_NAME" \
               -F "runtime=nodejs20" \
               -F "entrypoint=dist/server.js" \
               -F "file=@ork-reports.tar.gz;type=application/gzip" \
               "$VIBE_URL/apps")
-            HTTP_CODE2=$(echo "$RESP2" | grep -i "^HTTP" | tail -1 | awk '{print $2}')
-            BODY2=$(echo "$RESP2" | awk 'BEGIN{h=1} /^\r?$/{if(h){h=0;next}} !h{print}')
-            echo "HTTP $HTTP_CODE2 — Body: $BODY2"
-            APP_ID=$(echo "$BODY2" | python3 -c \
-              "import sys,json; d=json.load(sys.stdin); print(d.get('id', d.get('data',{}).get('id','')))" \
-              2>/dev/null || echo "")
+            echo "HTTP $CODE | $(cat /tmp/create3.json)"
+            APP_ID=$(jq -r '.id // .data.id // .app.id // .result.id // empty' \
+              /tmp/create3.json 2>/dev/null | head -1)
           fi
 
-          # Attempt 3: re-read app list (maybe 201 returns empty body but creates the app)
+          # ── 3. Re-read list (some APIs return 201 with empty body) ───────
           if [ -z "$APP_ID" ]; then
-            echo "Checking if app was created silently..."
-            sleep 2
-            RESP3=$(curl -sf \
+            echo ""
+            echo "=== Re-reading app list after create attempts ==="
+            sleep 3
+            curl -s -o /tmp/apps_retry.json \
               -H "Authorization: Bearer $VIBE_KEY" \
-              "$VIBE_URL/apps")
-            APP_ID=$(echo "$RESP3" | jq -r --arg n "$APP_NAME" \
-              '.data[] | select(.name == $n) | .id // empty' 2>/dev/null | head -1 || echo "")
-            echo "After create, app_id from list: '$APP_ID'"
+              "$VIBE_URL/apps"
+            echo "$(cat /tmp/apps_retry.json | jq . 2>/dev/null || cat /tmp/apps_retry.json)"
+            APP_ID=$(jq -r --arg n "$APP_NAME" \
+              '.data[] | select(.name == $n) | .id // empty' \
+              /tmp/apps_retry.json 2>/dev/null | head -1)
+            echo "app_id after retry: '$APP_ID'"
           fi
 
-          echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
-          echo "Final app_id: '$APP_ID'"
-
-      # ── Resolve app ID ────────────────────────────────────────────────────
-      - name: Resolve app ID
-        id: app
-        run: |
-          APP_ID="${{ steps.find.outputs.app_id }}"
           if [ -z "$APP_ID" ]; then
-            APP_ID="${{ steps.create.outputs.app_id }}"
+            echo "::error::Could not create app. API responses above show why."
+            exit 1
           fi
+
           echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
-          echo "::notice::App ID: $APP_ID"
+          echo "::notice::App ID resolved: $APP_ID"
 
-      # ── Deploy / update via /v1/apps endpoints ────────────────────────────
-      - name: Deploy — PUT /v1/apps/{id} with archive
-        id: deploy_put
-        if: steps.app.outputs.app_id != ''
-        continue-on-error: true
+      # ── Upload archive ────────────────────────────────────────────────────
+      - name: Upload archive to Vibecode
+        id: upload
         env:
           APP_ID: ${{ steps.app.outputs.app_id }}
         run: |
-          echo "=== PUT /v1/apps/$APP_ID (multipart archive) ==="
-          RESP=$(curl -si -X PUT \
+          echo "=== Uploading ork-reports.tar.gz to app $APP_ID ==="
+
+          echo "--- PUT /v1/apps/$APP_ID (field: file) ---"
+          CODE=$(curl -s -w "%{http_code}" -X PUT \
+            -o /tmp/put1.json \
             -H "Authorization: Bearer $VIBE_KEY" \
             -F "file=@ork-reports.tar.gz;type=application/gzip" \
             "$VIBE_URL/apps/$APP_ID")
-          echo "$RESP"
-          HTTP_CODE=$(echo "$RESP" | grep -i "^HTTP" | tail -1 | awk '{print $2}')
-          echo "HTTP $HTTP_CODE"
-          [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] && echo "put_ok=true" >> $GITHUB_OUTPUT || true
+          echo "HTTP $CODE | $(cat /tmp/put1.json)"
 
-      - name: Deploy — PATCH /v1/apps/{id} with archive
-        id: deploy_patch
-        if: steps.app.outputs.app_id != '' && steps.deploy_put.outputs.put_ok != 'true'
-        continue-on-error: true
-        env:
-          APP_ID: ${{ steps.app.outputs.app_id }}
-        run: |
-          echo "=== PATCH /v1/apps/$APP_ID ==="
-          RESP=$(curl -si -X PATCH \
+          echo "--- PUT /v1/apps/$APP_ID (field: archive) ---"
+          CODE=$(curl -s -w "%{http_code}" -X PUT \
+            -o /tmp/put2.json \
+            -H "Authorization: Bearer $VIBE_KEY" \
+            -F "archive=@ork-reports.tar.gz;type=application/gzip" \
+            "$VIBE_URL/apps/$APP_ID")
+          echo "HTTP $CODE | $(cat /tmp/put2.json)"
+
+          echo "--- PATCH /v1/apps/$APP_ID (field: file) ---"
+          CODE=$(curl -s -w "%{http_code}" -X PATCH \
+            -o /tmp/patch1.json \
             -H "Authorization: Bearer $VIBE_KEY" \
             -F "file=@ork-reports.tar.gz;type=application/gzip" \
             "$VIBE_URL/apps/$APP_ID")
-          echo "$RESP"
+          echo "HTTP $CODE | $(cat /tmp/patch1.json)"
 
-      - name: Deploy — POST /v1/apps/{id} (redeploy)
-        if: steps.app.outputs.app_id != ''
-        continue-on-error: true
-        env:
-          APP_ID: ${{ steps.app.outputs.app_id }}
-        run: |
-          echo "=== POST /v1/apps/$APP_ID (redeploy trigger) ==="
-          RESP=$(curl -si -X POST \
+          echo "--- POST /v1/apps/$APP_ID (field: file) ---"
+          CODE=$(curl -s -w "%{http_code}" -X POST \
+            -o /tmp/post1.json \
             -H "Authorization: Bearer $VIBE_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"action":"deploy"}' \
+            -F "file=@ork-reports.tar.gz;type=application/gzip" \
             "$VIBE_URL/apps/$APP_ID")
-          echo "$RESP"
+          echo "HTTP $CODE | $(cat /tmp/post1.json)"
 
-      # ── Sub-path scan (to discover deploy/upload endpoints) ──────────────
-      - name: Scan sub-paths on app
-        if: steps.app.outputs.app_id != ''
-        continue-on-error: true
+      # ── Scan sub-paths to find deploy/upload endpoints ────────────────────
+      - name: Scan sub-paths
         env:
           APP_ID: ${{ steps.app.outputs.app_id }}
         run: |
-          echo "=== Scanning sub-paths for /v1/apps/$APP_ID ==="
-          for SUB in deploy upload files archive start restart logs status release publish build; do
-            for METHOD in GET POST PUT; do
-              CODE=$(curl -so /dev/null -w "%{http_code}" -X "$METHOD" \
+          echo "=== Sub-path scan for /v1/apps/$APP_ID ==="
+          for SUB in deploy upload files bundle archive start restart publish release build; do
+            for METHOD in GET POST PUT PATCH; do
+              CODE=$(curl -s -w "%{http_code}" -o /tmp/scan_resp.json -X "$METHOD" \
                 -H "Authorization: Bearer $VIBE_KEY" \
                 -H "Content-Type: application/json" \
                 -d '{}' \
                 "$VIBE_URL/apps/$APP_ID/$SUB")
-              [ "$CODE" != "404" ] && echo "  ✅ $METHOD /v1/apps/$APP_ID/$SUB  →  HTTP $CODE"
+              if [ "$CODE" != "404" ] && [ "$CODE" != "000" ]; then
+                echo "  ✅ $METHOD /v1/apps/$APP_ID/$SUB → HTTP $CODE | $(cat /tmp/scan_resp.json)"
+              fi
             done
           done
 
-      # ── Final state ───────────────────────────────────────────────────────
-      - name: Final app state
-        if: steps.app.outputs.app_id != ''
+      # ── Final app state ───────────────────────────────────────────────────
+      - name: App state after deploy
+        env:
+          APP_ID: ${{ steps.app.outputs.app_id }}
         run: |
-          echo "=== GET /v1/apps/${{ steps.app.outputs.app_id }} ==="
-          curl -sf \
+          echo "=== GET /v1/apps/$APP_ID ==="
+          curl -s \
             -H "Authorization: Bearer $VIBE_KEY" \
-            "$VIBE_URL/apps/${{ steps.app.outputs.app_id }}" \
-            | python3 -m json.tool || true
+            "$VIBE_URL/apps/$APP_ID" | jq . 2>/dev/null || true
 
-      # ── Artifact (всегда доступен для ручного деплоя) ─────────────────────
+      # ── Artifact (для ручного деплоя) ─────────────────────────────────────
       - name: Upload artifact
         if: always()
         uses: actions/upload-artifact@v4
