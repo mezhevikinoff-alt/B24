@@ -6,7 +6,11 @@ on:
   workflow_dispatch:
 
 env:
+  # vibe_api_... key — for Vibecode management API (apps, appUrl)
   VIBE_KEY: ${{ secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
+  # Key that OWNS the infra server — set VIBE_INFRA_KEY secret in repo settings
+  # if different from VIBE_KEY (HTTP 403 means wrong key)
+  VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY || secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
   VIBE_API_URL: https://vibecode.bitrix24.tech/v1
   EXEC_URL: https://vibecode.bitrix24.tech/v1/infra/servers/5b93084a-2124-4a42-a589-52c27075da3f/exec
   APP_SERVER: https://app-7ef23f885c9b.vibecode.bitrix24.tech
@@ -41,7 +45,6 @@ jobs:
 
       - name: Package
         run: |
-          sudo apt-get install -y zip -q
           mkdir -p _pkg
           cp -r backend/dist    _pkg/
           cp -r backend/public  _pkg/ 2>/dev/null || true
@@ -49,103 +52,58 @@ jobs:
           cp backend/package-lock.json _pkg/ 2>/dev/null || true
           cd _pkg && npm install --omit=dev && cd ..
           tar czf ork-reports.tar.gz -C _pkg .
-          echo "Archive size: $(du -sh ork-reports.tar.gz | cut -f1)"
-
-      # ── Probe exec endpoint ───────────────────────────────────────────────
-      - name: Probe exec endpoint
-        run: |
-          echo "=== Probing exec endpoint: $EXEC_URL ==="
-          for BODY in \
-            '{"command":"echo hello"}' \
-            '{"cmd":"echo hello"}' \
-            '{"script":"echo hello"}' \
-            '{"run":"echo hello"}'; do
-            CODE=$(curl -s -w "%{http_code}" -X POST \
-              -o /tmp/probe_exec.json \
-              -H "Authorization: Bearer $VIBE_KEY" \
-              -H "Content-Type: application/json" \
-              -d "$BODY" \
-              "$EXEC_URL" 2>/dev/null || echo "000")
-            echo "  $BODY  →  HTTP $CODE  |  $(cat /tmp/probe_exec.json 2>/dev/null || true)"
-          done
+          echo "Archive: $(du -sh ork-reports.tar.gz | cut -f1)"
 
       # ── Deploy via exec API ───────────────────────────────────────────────
-      - name: Deploy via exec — git pull + build + restart
-        id: deploy_exec
+      # API format confirmed: POST {"command": "..."} with Authorization: Bearer <key>
+      # Error 403 WRONG_KEY means the key doesn't own this server.
+      # Set VIBE_INFRA_KEY secret to the key that created the server.
+      - name: Deploy via exec — git clone/pull + build + restart
+        id: deploy
         run: |
-          echo "=== Deploy via exec API ==="
+          echo "=== Deploy via exec API: $EXEC_URL ==="
 
-          DEPLOY_CMD="set -e
-            APP_DIR=\${APP_DIR:-/home/app/ork-reports}
-            echo Working dir: \$APP_DIR
-            if [ -d \"\$APP_DIR/.git\" ]; then
-              cd \"\$APP_DIR\" && git fetch origin && git reset --hard origin/main
+          DEPLOY_CMD='set -e
+            APP_DIR=${APP_DIR:-/home/app/ork-reports}
+            echo "Working dir: $APP_DIR"
+            if [ -d "$APP_DIR/.git" ]; then
+              cd "$APP_DIR"
+              git fetch origin
+              git reset --hard origin/main
             else
-              mkdir -p \"\$(dirname \$APP_DIR)\"
-              git clone https://github.com/mezhevikinoff-alt/B24.git \"\$APP_DIR\"
-              cd \"\$APP_DIR\"
+              mkdir -p "$(dirname $APP_DIR)"
+              git clone https://github.com/mezhevikinoff-alt/B24.git "$APP_DIR"
+              cd "$APP_DIR"
             fi
             cd frontend && npm install --silent && npm run build && cd ..
             cd backend  && npm install --silent && npm run build && cd ..
             if command -v pm2 >/dev/null 2>&1; then
-              pm2 describe ork-reports >/dev/null 2>&1 && pm2 restart ork-reports || pm2 start backend/dist/server.js --name ork-reports
+              pm2 describe ork-reports >/dev/null 2>&1 \
+                && pm2 restart ork-reports \
+                || pm2 start backend/dist/server.js --name ork-reports
             fi
-            echo DEPLOY_DONE"
+            echo "=== DEPLOY DONE ==="'
 
-          DEPLOYED=false
-          for KEY in command cmd script run; do
-            PAYLOAD=$(jq -n --arg k "$KEY" --arg v "$DEPLOY_CMD" '{($k): $v}')
-            CODE=$(curl -s -w "%{http_code}" -X POST \
-              -o /tmp/exec_${KEY}.json \
-              -H "Authorization: Bearer $VIBE_KEY" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD" \
-              "$EXEC_URL" 2>/dev/null || echo "000")
-            RESP=$(cat /tmp/exec_${KEY}.json 2>/dev/null || true)
-            echo "key=$KEY  HTTP $CODE  |  $RESP"
-            if [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]]; then
-              DEPLOYED=true
-              echo "deployed=$DEPLOYED" >> $GITHUB_OUTPUT
-              echo "deploy_code=$CODE"  >> $GITHUB_OUTPUT
-              break
-            fi
-          done
+          CODE=$(curl -s -w "%{http_code}" -X POST \
+            -o /tmp/exec_deploy.json \
+            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg cmd "$DEPLOY_CMD" '{"command":$cmd}')" \
+            "$EXEC_URL" 2>/dev/null || echo "000")
 
-          if [ "$DEPLOYED" = false ]; then
+          RESP=$(cat /tmp/exec_deploy.json 2>/dev/null || true)
+          echo "HTTP $CODE | $RESP"
+
+          if [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]]; then
+            echo "deployed=true" >> $GITHUB_OUTPUT
+            echo "::notice::Deployed via exec API (HTTP $CODE)"
+          elif [[ "$CODE" == "403" ]]; then
             echo "deployed=false" >> $GITHUB_OUTPUT
-            echo "deploy_code=0"  >> $GITHUB_OUTPUT
+            echo "::error::HTTP 403 WRONG_KEY — set VIBE_INFRA_KEY secret to the key that owns server 5b93084a-2124-4a42-a589-52c27075da3f"
+          else
+            echo "deployed=false" >> $GITHUB_OUTPUT
+            echo "::warning::Exec API returned HTTP $CODE"
           fi
-
-      # ── Upload pre-built archive via exec (base64) ────────────────────────
-      - name: Deploy via exec — upload pre-built archive
-        id: deploy_upload
-        if: steps.deploy_exec.outputs.deployed != 'true'
-        run: |
-          echo "=== Fallback: send pre-built archive via exec (base64) ==="
-
-          B64=$(base64 -w 0 ork-reports.tar.gz)
-          UPLOAD_CMD="echo '${B64}' | base64 -d > /tmp/ork-reports.tar.gz
-            mkdir -p /home/app/ork-reports
-            tar xzf /tmp/ork-reports.tar.gz -C /home/app/ork-reports
-            cd /home/app/ork-reports
-            npm install --omit=dev --silent
-            pm2 describe ork-reports >/dev/null 2>&1 && pm2 restart ork-reports || pm2 start dist/server.js --name ork-reports
-            echo UPLOAD_DONE"
-
-          for KEY in command cmd script run; do
-            PAYLOAD=$(jq -n --arg k "$KEY" --arg v "$UPLOAD_CMD" '{($k): $v}')
-            CODE=$(curl -s -w "%{http_code}" -X POST \
-              -o /tmp/upload_${KEY}.json \
-              -H "Authorization: Bearer $VIBE_KEY" \
-              -H "Content-Type: application/json" \
-              -d "$PAYLOAD" \
-              "$EXEC_URL" 2>/dev/null || echo "000")
-            echo "key=$KEY  HTTP $CODE  |  $(cat /tmp/upload_${KEY}.json 2>/dev/null || true)"
-            if [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]]; then
-              echo "uploaded=true" >> $GITHUB_OUTPUT
-              break
-            fi
-          done
 
       # ── PATCH appUrl on Vibecode management API ───────────────────────────
       - name: Set appUrl on Vibecode API
@@ -164,7 +122,7 @@ jobs:
             | grep -v '^null$' | head -1 || true)
           echo "app_url=${APP_URL:-$APP_SERVER}" >> $GITHUB_OUTPUT
 
-      # ── Deploy frontend to GitHub Pages (static fallback) ─────────────────
+      # ── Deploy frontend to GitHub Pages ───────────────────────────────────
       - name: Deploy frontend to GitHub Pages
         id: pages
         continue-on-error: true
@@ -197,7 +155,7 @@ jobs:
       - name: Summary
         if: always()
         env:
-          DEPLOYED:  ${{ steps.deploy_exec.outputs.deployed }}
+          DEPLOYED:  ${{ steps.deploy.outputs.deployed }}
           APP_URL:   ${{ steps.set_url.outputs.app_url }}
           PAGES_URL: ${{ steps.pages.outputs.pages_url }}
         run: |
@@ -219,3 +177,8 @@ jobs:
           echo "    HANDLER:   '$FINAL_URL',"
           echo "    LANG_ALL:  { ru: { NAME: 'ОРК — Отчёты' } }"
           echo "  }, console.log);"
+          echo ""
+          if [ "${DEPLOYED:-false}" != "true" ]; then
+            echo "::warning::Exec deploy did not succeed."
+            echo "To fix: add secret VIBE_INFRA_KEY = <key that owns server 5b93084a-...>"
+          fi
