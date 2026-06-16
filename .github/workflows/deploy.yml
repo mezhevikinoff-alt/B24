@@ -14,6 +14,8 @@ env:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed for GitHub Pages deploy
 
     steps:
       - name: Checkout
@@ -26,14 +28,113 @@ jobs:
 
       - name: Build frontend
         working-directory: frontend
+        env:
+          GITHUB_PAGES: 'true'
         run: npm install && npm run build
 
       - name: Build backend
         working-directory: backend
         run: npm install && npm run build
 
-      - name: Package app
-        id: package
+      # ── Deploy frontend to GitHub Pages ───────────────────────────────────
+      # The React app (static files) is served for free from GitHub Pages.
+      # This gives us a stable https URL to set as appUrl in Vibecode.
+      - name: Deploy frontend to GitHub Pages
+        id: pages
+        run: |
+          REPO="${{ github.repository }}"
+          BRANCH="gh-pages"
+          PAGES_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
+
+          # The frontend builds to backend/public/ — copy to a temp dir
+          mkdir -p /tmp/gh-pages
+          cp -r backend/public/. /tmp/gh-pages/
+
+          # Configure git
+          git config user.email "actions@github.com"
+          git config user.name  "GitHub Actions"
+
+          # Push to gh-pages branch
+          cd /tmp/gh-pages
+          git init
+          git checkout -b gh-pages
+          git add -A
+          git commit -m "Deploy ORK frontend to GitHub Pages"
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/$REPO.git"
+          git push origin gh-pages --force
+
+          echo "pages_url=$PAGES_URL" >> $GITHUB_OUTPUT
+          echo "::notice::GitHub Pages URL: $PAGES_URL"
+
+      # ── Test: can Vibecode accept an external appUrl? ─────────────────────
+      - name: Test PATCH appUrl on Vibecode
+        id: patch_url
+        env:
+          APP_URL: ${{ steps.pages.outputs.pages_url }}
+        run: |
+          echo "=== Testing: PATCH /v1/apps/$KNOWN_APP_ID with appUrl ==="
+          echo "appUrl to set: $APP_URL"
+
+          # Try setting appUrl directly
+          CODE=$(curl -s -w "%{http_code}" -X PATCH \
+            -o /tmp/patch_appurl.json \
+            -H "Authorization: Bearer $VIBE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"appUrl\":\"$APP_URL\"}" \
+            "$VIBE_URL/apps/$KNOWN_APP_ID")
+          echo "PATCH appUrl → HTTP $CODE"
+          cat /tmp/patch_appurl.json | jq . 2>/dev/null || cat /tmp/patch_appurl.json
+
+          NEW_APP_URL=$(jq -r '.data.appUrl // empty' /tmp/patch_appurl.json 2>/dev/null \
+            | grep -v '^null$' | head -1 || true)
+
+          # Also try PUT
+          CODE2=$(curl -s -w "%{http_code}" -X PUT \
+            -o /tmp/put_appurl.json \
+            -H "Authorization: Bearer $VIBE_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"appUrl\":\"$APP_URL\",\"title\":\"ORK Reports\",\"scopes\":[\"crm\",\"timeman\",\"user\",\"placement\"]}" \
+            "$VIBE_URL/apps/$KNOWN_APP_ID")
+          echo "PUT appUrl → HTTP $CODE2"
+          cat /tmp/put_appurl.json | jq . 2>/dev/null || cat /tmp/put_appurl.json
+
+          if [ -z "$NEW_APP_URL" ] || [ "$NEW_APP_URL" = "null" ]; then
+            NEW_APP_URL=$(jq -r '.data.appUrl // empty' /tmp/put_appurl.json 2>/dev/null \
+              | grep -v '^null$' | head -1 || true)
+          fi
+
+          echo "resolved_app_url=$NEW_APP_URL" >> $GITHUB_OUTPUT
+          if [ -n "$NEW_APP_URL" ] && [ "$NEW_APP_URL" != "null" ]; then
+            echo "::notice::appUrl successfully set: $NEW_APP_URL"
+          else
+            echo "::notice::appUrl still null — Vibecode may not support external URLs"
+          fi
+
+      # ── Get final app state ───────────────────────────────────────────────
+      - name: Get final app state
+        id: final
+        run: |
+          echo "=== GET /v1/apps/$KNOWN_APP_ID ==="
+          curl -s -o /tmp/final.json \
+            -H "Authorization: Bearer $VIBE_KEY" \
+            "$VIBE_URL/apps/$KNOWN_APP_ID"
+          cat /tmp/final.json | jq . 2>/dev/null || cat /tmp/final.json
+
+          APP_URL=$(jq -r '.data.appUrl // empty' /tmp/final.json 2>/dev/null \
+            | grep -v '^null$' | head -1 || true)
+          HANDLER=$(jq -r '.data.handlerUrl // empty' /tmp/final.json 2>/dev/null | head -1 || true)
+          CLIENT_ID=$(jq -r '.data.bitrixClientId // empty' /tmp/final.json 2>/dev/null | head -1 || true)
+          PREFIX=$(jq -r '.data.prefix // empty' /tmp/final.json 2>/dev/null | head -1 || true)
+          SUFFIX=$(jq -r '.data.suffix // empty' /tmp/final.json 2>/dev/null | head -1 || true)
+
+          echo "app_url=$APP_URL"       >> $GITHUB_OUTPUT
+          echo "handler=$HANDLER"       >> $GITHUB_OUTPUT
+          echo "client_id=$CLIENT_ID"   >> $GITHUB_OUTPUT
+          echo "prefix=$PREFIX"         >> $GITHUB_OUTPUT
+          echo "suffix=$SUFFIX"         >> $GITHUB_OUTPUT
+
+      # ── Package backend (artifact) ────────────────────────────────────────
+      - name: Package backend artifact
         run: |
           sudo apt-get install -y zip -q
           mkdir -p _pkg
@@ -42,209 +143,55 @@ jobs:
           cp backend/package.json _pkg/
           cp backend/package-lock.json _pkg/ 2>/dev/null || true
           cd _pkg && npm install --omit=dev && cd ..
-          tar czf ork-reports.tar.gz -C _pkg .
-          zip -r ork-reports.zip _pkg -q
-          echo "size=$(du -sh ork-reports.tar.gz | cut -f1)" >> $GITHUB_OUTPUT
-          echo "::notice::Archive: $(du -sh ork-reports.tar.gz | cut -f1)"
+          zip -r ork-backend.zip _pkg -q
+          echo "Backend zip: $(du -sh ork-backend.zip | cut -f1)"
 
-      # ── Verify app still exists ───────────────────────────────────────────
-      - name: Verify / recreate app
-        id: app
-        run: |
-          APP_ID="$KNOWN_APP_ID"
-          echo "=== GET /v1/apps/$APP_ID ==="
-          CODE=$(curl -s -w "%{http_code}" -o /tmp/app.json \
-            -H "Authorization: Bearer $VIBE_KEY" \
-            "$VIBE_URL/apps/$APP_ID")
-          echo "HTTP $CODE"
-          cat /tmp/app.json | jq . 2>/dev/null || cat /tmp/app.json
-
-          if [ "$CODE" = "404" ] || [ "$CODE" = "000" ]; then
-            echo "::warning::App not found, recreating..."
-            curl -s -w "%{http_code}" -X POST \
-              -o /tmp/create.json \
-              -H "Authorization: Bearer $VIBE_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{\"title\":\"ORK Reports\",\"name\":\"$APP_NAME\",\"runtime\":\"nodejs20\",\"entrypoint\":\"dist/server.js\",\"scopes\":[\"crm\",\"timeman\",\"user\",\"placement\"]}" \
-              "$VIBE_URL/apps"
-            cat /tmp/create.json
-            APP_ID=$(jq -r '.id // .data.id // empty' /tmp/create.json 2>/dev/null | head -1 || true)
-          fi
-
-          # Save known fields
-          PREFIX=$(jq -r '.data.prefix // empty' /tmp/app.json 2>/dev/null | head -1 || true)
-          SUFFIX=$(jq -r '.data.suffix // empty' /tmp/app.json 2>/dev/null | head -1 || true)
-          HANDLER=$(jq -r '.data.handlerUrl // empty' /tmp/app.json 2>/dev/null | head -1 || true)
-          CLIENT_ID=$(jq -r '.data.bitrixClientId // empty' /tmp/app.json 2>/dev/null | head -1 || true)
-
-          echo "app_id=$APP_ID"            >> $GITHUB_OUTPUT
-          echo "prefix=$PREFIX"            >> $GITHUB_OUTPUT
-          echo "suffix=$SUFFIX"            >> $GITHUB_OUTPUT
-          echo "handler_url=$HANDLER"      >> $GITHUB_OUTPUT
-          echo "bitrix_client_id=$CLIENT_ID" >> $GITHUB_OUTPUT
-          echo "::notice::App ID: $APP_ID | prefix=$PREFIX suffix=$SUFFIX"
-
-      # ── Upload archive (known working method: PUT tar.gz) ─────────────────
-      - name: Upload archive
-        id: upload
-        env:
-          APP_ID: ${{ steps.app.outputs.app_id }}
-        run: |
-          echo "=== PUT /v1/apps/$APP_ID (application/gzip) ==="
-          CODE=$(curl -s -w "%{http_code}" -X PUT \
-            -o /tmp/upload_resp.json \
-            -H "Authorization: Bearer $VIBE_KEY" \
-            -H "Content-Type: application/gzip" \
-            --data-binary @ork-reports.tar.gz \
-            "$VIBE_URL/apps/$APP_ID")
-          echo "HTTP $CODE | $(cat /tmp/upload_resp.json)"
-          echo "upload_code=$CODE" >> $GITHUB_OUTPUT
-          echo "::notice::Upload HTTP $CODE"
-
-      # ── Try to start / activate the app ──────────────────────────────────
-      - name: Start app (trigger activation)
-        env:
-          APP_ID: ${{ steps.app.outputs.app_id }}
-        run: |
-          echo "=== Trying to start/activate app after upload ==="
-
-          # PATCH with status variants
-          for STATUS in active running deployed started; do
-            CODE=$(curl -s -w "%{http_code}" -X PATCH \
-              -o /tmp/start_$STATUS.json \
-              -H "Authorization: Bearer $VIBE_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{\"status\":\"$STATUS\"}" \
-              "$VIBE_URL/apps/$APP_ID")
-            echo "PATCH status=$STATUS → HTTP $CODE | $(cat /tmp/start_$STATUS.json)"
-          done
-
-          # POST with action variants
-          for ACTION in start deploy activate publish restart; do
-            CODE=$(curl -s -w "%{http_code}" -X POST \
-              -o /tmp/action_$ACTION.json \
-              -H "Authorization: Bearer $VIBE_KEY" \
-              -H "Content-Type: application/json" \
-              -d "{\"action\":\"$ACTION\"}" \
-              "$VIBE_URL/apps/$APP_ID")
-            echo "POST action=$ACTION → HTTP $CODE | $(cat /tmp/action_$ACTION.json)"
-          done
-
-          # PUT with deploy flag
-          CODE=$(curl -s -w "%{http_code}" -X PUT \
-            -o /tmp/put_deploy.json \
-            -H "Authorization: Bearer $VIBE_KEY" \
-            -H "Content-Type: application/json" \
-            -d '{"deploy":true}' \
-            "$VIBE_URL/apps/$APP_ID")
-          echo "PUT deploy=true → HTTP $CODE | $(cat /tmp/put_deploy.json)"
-
-      # ── Poll appUrl (up to 90s) ───────────────────────────────────────────
-      - name: Poll for appUrl
-        id: url
-        env:
-          APP_ID: ${{ steps.app.outputs.app_id }}
-        run: |
-          APP_URL=""
-          echo "=== Polling /v1/apps/$APP_ID for appUrl (6×15s) ==="
-          for i in 1 2 3 4 5 6; do
-            sleep 15
-            curl -s -o /tmp/poll_$i.json \
-              -H "Authorization: Bearer $VIBE_KEY" \
-              "$VIBE_URL/apps/$APP_ID"
-
-            APP_URL=$(jq -r '.data.appUrl // .data.url // .data.domain // .data.endpoint // empty' \
-              /tmp/poll_$i.json 2>/dev/null | grep -v '^null$' | head -1 || true)
-            STATUS=$(jq -r '.data.status // .data.state // empty' \
-              /tmp/poll_$i.json 2>/dev/null | head -1 || true)
-            echo "  [attempt $i] appUrl=$APP_URL  status=$STATUS"
-
-            if [ -n "$APP_URL" ] && [ "$APP_URL" != "null" ]; then
-              echo "::notice::appUrl resolved: $APP_URL"
-              break
-            fi
-          done
-
-          # Dump final full state
-          echo "=== Final app state ==="
-          cat /tmp/poll_6.json | jq . 2>/dev/null || cat /tmp/poll_6.json
-
-          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
-
-      # ── Try to derive URL from prefix/suffix ─────────────────────────────
-      - name: Derive URL from prefix/suffix
-        id: derived
-        env:
-          APP_ID: ${{ steps.app.outputs.app_id }}
-          PREFIX: ${{ steps.app.outputs.prefix }}
-          SUFFIX: ${{ steps.app.outputs.suffix }}
-          APP_URL: ${{ steps.url.outputs.app_url }}
-        run: |
-          if [ -n "$APP_URL" ] && [ "$APP_URL" != "null" ]; then
-            echo "appUrl already known: $APP_URL"
-            echo "guessed_url=$APP_URL" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "=== Guessing URL from prefix=$PREFIX suffix=$SUFFIX ==="
-          CANDIDATES=(
-            "https://${PREFIX}-${SUFFIX}.vibecode.bitrix24.tech"
-            "https://${APP_ID}.vibecode.bitrix24.tech"
-            "https://${APP_NAME}.vibecode.bitrix24.tech"
-            "https://${PREFIX}.vibecode.bitrix24.tech"
-          )
-
-          GUESSED=""
-          for URL in "${CANDIDATES[@]}"; do
-            CODE=$(curl -so /dev/null -w "%{http_code}" --max-time 5 "$URL" 2>/dev/null || echo "000")
-            echo "  $URL → HTTP $CODE"
-            if [ "$CODE" != "000" ] && [ "$CODE" != "404" ]; then
-              GUESSED="$URL"
-              echo "::notice::Guessed URL accessible: $URL (HTTP $CODE)"
-              break
-            fi
-          done
-
-          echo "guessed_url=$GUESSED" >> $GITHUB_OUTPUT
-
-      # ── Artifact ─────────────────────────────────────────────────────────
-      - name: Upload artifact
+      - name: Upload backend artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ork-reports-${{ github.sha }}
-          path: ork-reports.tar.gz
-          retention-days: 14
+          name: ork-backend-${{ github.sha }}
+          path: ork-backend.zip
+          retention-days: 30
 
       # ── Summary ──────────────────────────────────────────────────────────
       - name: Summary
         if: always()
         env:
-          APP_ID: ${{ steps.app.outputs.app_id }}
-          HANDLER: ${{ steps.app.outputs.handler_url }}
-          CLIENT_ID: ${{ steps.app.outputs.bitrix_client_id }}
-          APP_URL: ${{ steps.url.outputs.app_url }}
-          GUESSED: ${{ steps.derived.outputs.guessed_url }}
+          PAGES_URL:    ${{ steps.pages.outputs.pages_url }}
+          VIBECODE_URL: ${{ steps.final.outputs.app_url }}
+          HANDLER:      ${{ steps.final.outputs.handler }}
+          CLIENT_ID:    ${{ steps.final.outputs.client_id }}
+          PREFIX:       ${{ steps.final.outputs.prefix }}
+          SUFFIX:       ${{ steps.final.outputs.suffix }}
         run: |
-          FINAL_URL="${APP_URL:-${GUESSED:-$HANDLER}}"
+          # Best URL for Bitrix24 placement:
+          # 1. appUrl (if Vibecode accepted it) 2. Pages URL 3. handlerUrl
+          FINAL_URL="${VIBECODE_URL:-${PAGES_URL:-$HANDLER}}"
 
-          echo "================================================"
+          echo "================================================================"
           echo "  ORK Reports — Deploy Summary"
-          echo "================================================"
-          echo "  App ID         : $APP_ID"
-          echo "  Upload HTTP    : ${{ steps.upload.outputs.upload_code }}"
-          echo "  appUrl         : ${APP_URL:-<null>}"
-          echo "  Guessed URL    : ${GUESSED:-<none>}"
-          echo "  handlerUrl     : $HANDLER"
-          echo "  bitrixClientId : $CLIENT_ID"
-          echo "  → Use for Bitrix24: $FINAL_URL"
-          echo "================================================"
+          echo "================================================================"
+          echo "  GitHub Pages    : $PAGES_URL"
+          echo "  Vibecode appUrl : ${VIBECODE_URL:-<null>}"
+          echo "  handlerUrl      : $HANDLER"
+          echo "  bitrixClientId  : $CLIENT_ID"
+          echo "  prefix / suffix : $PREFIX / $SUFFIX"
+          echo "  → Best URL      : $FINAL_URL"
+          echo "================================================================"
           echo ""
-          echo "Встройка в левое меню Битрикс24:"
+          echo "Backend artifact: ork-backend-*.zip (deploy separately on"
+          echo "Render / Railway / Fly.io for hour corrections storage)"
+          echo ""
+          echo "Встройка в левое меню Битрикс24 (выполнить в BX24 Dev Tools):"
+          echo ""
           echo "  BX24.callMethod('placement.bind', {"
           echo "    PLACEMENT: 'APPLICATION_LEFT_MENU',"
           echo "    HANDLER:   '$FINAL_URL',"
           echo "    LANG_ALL:  { ru: { NAME: 'ОРК — Отчёты' } }"
           echo "  }, console.log);"
           echo ""
-          echo "  bitrixClientId для установки приложения: $CLIENT_ID"
+          echo "Установка Bitrix24 local app:"
+          echo "  bitrixClientId: $CLIENT_ID"
+          echo "  Зайдите: Битрикс24 → Разработчикам → Локальные приложения"
+          echo "  Найдите приложение с Client ID: $CLIENT_ID"
