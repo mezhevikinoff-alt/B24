@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   getUserList, getLeadsForMonth, getDealCategories, getDealsByLeadIds,
-  EXCLUDE_STATUS_IDS_CONFIG,
+  resolveExcludedStatusIds,
 } from '../api/bitrix';
 import { getJoints, saveJoint } from '../api/backend';
 import { getMonthRange, calcProcessingHours, formatDateRu } from '../utils/dates';
@@ -56,10 +56,10 @@ export function ConversionModule({ year, month }: Props) {
       const total = allLeads.length;
       setTotalCount(total);
 
-      // Filter excluded statuses
-      const excluded = EXCLUDE_STATUS_IDS_CONFIG;
+      // Filter excluded statuses (system IDs + name-matched IDs)
+      const excludedIds = await resolveExcludedStatusIds();
       const filteredLeads: Lead[] = allLeads.filter(
-        (l: Lead) => !excluded.includes(l.STATUS_ID),
+        (l: Lead) => !excludedIds.has(l.STATUS_ID),
       );
       setExcludedCount(total - filteredLeads.length);
 

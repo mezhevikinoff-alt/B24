@@ -3,7 +3,7 @@ import * as XLSX from 'xlsx';
 import { useApp } from '../context/AppContext';
 import {
   getUserList, getLeadsForMonth, getDealCategories, getDealsByLeadIds,
-  getTimemanReport, EXCLUDE_STATUS_IDS_CONFIG,
+  getTimemanReport, resolveExcludedStatusIds,
 } from '../api/bitrix';
 import { getCorrections, getJoints } from '../api/backend';
 import { getMonthRange, calcProcessingHours, formatMonthRu, MAX_HOURS_PER_DAY, RATE_PER_HOUR, formatDate, getMonthDays } from '../utils/dates';
@@ -48,9 +48,9 @@ export function SummaryModule({ year, month }: Props) {
         if (c.NAME.toLowerCase().includes('банкрот')) bankIds.add(c.ID);
       });
 
-      // Filter leads
-      const excluded = EXCLUDE_STATUS_IDS_CONFIG;
-      const filtered = allLeads.filter((l: any) => !excluded.includes(l.STATUS_ID));
+      // Filter leads (system IDs + name-matched IDs)
+      const excludedIds = await resolveExcludedStatusIds();
+      const filtered = allLeads.filter((l: any) => !excludedIds.has(l.STATUS_ID));
       const converted = filtered.filter((l: any) => l.DATE_CONVERT && l.DATE_CONVERT.length > 0);
 
       // Dept-level conversion rate

@@ -102,12 +102,44 @@ export async function getTimemanReport(
 
 // ─── CRM ─────────────────────────────────────────────────────────────────────
 
-// Excluded status IDs for leads
-export const EXCLUDED_STATUS_IDS = ['JUNK', 'IN_PROCESS', 'DUPLICATE', 'RECYCLED'];
-// Statuses we want to exclude by name/meaning:
-// JUNK = СПАМ, duplicate-like = Дубль, collaboration proposal = separate
-// These are portal-specific, so we store them as constants the user can adjust
-export const EXCLUDE_STATUS_IDS_CONFIG = ['JUNK', 'DUPLICATE', 'RECYCLED', '12']; // '12' may be "Предложение по сотрудничеству"
+// System status IDs always excluded (Битрикс24 hardcoded values)
+export const EXCLUDE_STATUS_IDS_SYSTEM = ['JUNK', 'DUPLICATE', 'RECYCLED'];
+
+// Status names to exclude via text match (case-insensitive, partial match)
+export const EXCLUDE_STATUS_NAME_PATTERNS = [
+  'предложение по сотрудничеству',
+];
+
+// Loads all lead statuses from Bitrix24 and returns a map ID → NAME
+export async function getLeadStatusMap(): Promise<Record<string, string>> {
+  const statuses = await callMethod('crm.status.list', {
+    FILTER: { ENTITY_ID: 'STATUS' },
+    SELECT: ['STATUS_ID', 'NAME'],
+  });
+  const map: Record<string, string> = {};
+  for (const s of statuses) {
+    map[s.STATUS_ID] = s.NAME;
+  }
+  return map;
+}
+
+// Resolves the full set of status IDs to exclude:
+// system IDs + any IDs whose NAME matches EXCLUDE_STATUS_NAME_PATTERNS
+export async function resolveExcludedStatusIds(): Promise<Set<string>> {
+  const excluded = new Set(EXCLUDE_STATUS_IDS_SYSTEM);
+  try {
+    const statusMap = await getLeadStatusMap();
+    for (const [id, name] of Object.entries(statusMap)) {
+      const nameLower = name.toLowerCase();
+      if (EXCLUDE_STATUS_NAME_PATTERNS.some((p) => nameLower.includes(p))) {
+        excluded.add(id);
+      }
+    }
+  } catch {
+    // If status list fails, fall back to system IDs only
+  }
+  return excluded;
+}
 
 export async function getLeadsForMonth(dateFrom: string, dateTo: string): Promise<any[]> {
   return callMethod('crm.lead.list', {
