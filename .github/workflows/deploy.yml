@@ -9,7 +9,7 @@ env:
   VIBE_KEY: ${{ secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
   VIBE_URL: https://vibecode.bitrix24.tech/v1
   APP_NAME: ork-reports
-  # Known app ID — set after first successful create; skip re-creation on every push
+  # App created on 2026-06-16; skip re-creation on every push
   KNOWN_APP_ID: b6e86834-8b84-42c4-be4b-2bd2b092aa91
 
 jobs:
@@ -25,8 +25,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-        env:
-          ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
       - name: Build frontend
         working-directory: frontend
@@ -46,29 +44,23 @@ jobs:
           cp backend/package.json _pkg/
           cp backend/package-lock.json _pkg/ 2>/dev/null || true
           cd _pkg && npm install --omit=dev && cd ..
-          # Build both formats
           tar czf ork-reports.tar.gz -C _pkg .
           zip -r ork-reports.zip _pkg -q
           echo "tar.gz: $(du -sh ork-reports.tar.gz | cut -f1)  zip: $(du -sh ork-reports.zip | cut -f1)"
           echo "size=$(du -sh ork-reports.tar.gz | cut -f1)" >> $GITHUB_OUTPUT
-          echo "::notice::Archive ready: $(du -sh ork-reports.tar.gz | cut -f1)"
 
-      # ── Resolve app ID (use known ID, verify it exists) ──────────────────
+      # ── Resolve app ID ────────────────────────────────────────────────────
       - name: Resolve app ID
         id: app
         run: |
           APP_ID="$KNOWN_APP_ID"
 
-          # Verify the known ID still exists
+          echo "=== GET /v1/apps/$APP_ID ==="
           CODE=$(curl -s -w "%{http_code}" -o /tmp/app_check.json \
             -H "Authorization: Bearer $VIBE_KEY" \
-            "$VIBE_URL/apps/$APP_ID" 2>/dev/null || echo "000")
-          echo "GET /v1/apps/$APP_ID → HTTP $CODE"
+            "$VIBE_URL/apps/$APP_ID")
+          echo "HTTP $CODE"
           cat /tmp/app_check.json | jq . 2>/dev/null || cat /tmp/app_check.json
-
-          # Extract URL if already known
-          APP_URL=$(jq -r '.url // .data.url // .app_url // .domain // .host // empty' \
-            /tmp/app_check.json 2>/dev/null | head -1)
 
           if [ "$CODE" = "404" ] || [ "$CODE" = "000" ]; then
             echo "::warning::Known app ID not found, recreating..."
@@ -76,23 +68,14 @@ jobs:
               -o /tmp/create.json \
               -H "Authorization: Bearer $VIBE_KEY" \
               -H "Content-Type: application/json" \
-              -d "{
-                \"title\": \"ORK Reports\",
-                \"name\": \"$APP_NAME\",
-                \"runtime\": \"nodejs20\",
-                \"entrypoint\": \"dist/server.js\",
-                \"scopes\": [\"crm\",\"timeman\",\"user\",\"placement\"]
-              }" \
+              -d "{\"title\":\"ORK Reports\",\"name\":\"$APP_NAME\",\"runtime\":\"nodejs20\",\"entrypoint\":\"dist/server.js\",\"scopes\":[\"crm\",\"timeman\",\"user\",\"placement\"]}" \
               "$VIBE_URL/apps")
             echo "POST /v1/apps → HTTP $CODE2 | $(cat /tmp/create.json)"
-            APP_ID=$(jq -r '.id // .data.id // .app.id // empty' \
-              /tmp/create.json 2>/dev/null | head -1)
+            APP_ID=$(jq -r '.id // .data.id // empty' /tmp/create.json 2>/dev/null | head -1)
           fi
 
           echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
-          echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
           echo "::notice::App ID: $APP_ID"
-          [ -n "$APP_URL" ] && echo "::notice::App URL: $APP_URL"
 
       # ── Upload archive ────────────────────────────────────────────────────
       - name: Upload archive
@@ -100,97 +83,123 @@ jobs:
         env:
           APP_ID: ${{ steps.app.outputs.app_id }}
         run: |
-          echo "=== Uploading to /v1/apps/$APP_ID ==="
+          echo "=== Uploading archive to /v1/apps/$APP_ID ==="
           UPLOAD_OK=false
 
-          # 1. PUT raw tar.gz
+          echo "--- PUT /v1/apps/$APP_ID (Content-Type: application/gzip) ---"
           CODE=$(curl -s -w "%{http_code}" -X PUT \
             -o /tmp/up1.json \
             -H "Authorization: Bearer $VIBE_KEY" \
             -H "Content-Type: application/gzip" \
             --data-binary @ork-reports.tar.gz \
             "$VIBE_URL/apps/$APP_ID")
-          echo "PUT tar.gz → HTTP $CODE | $(cat /tmp/up1.json)"
-          [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]] && UPLOAD_OK=true
+          echo "HTTP $CODE | $(cat /tmp/up1.json)"
+          [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]] && UPLOAD_OK=true || true
 
-          # 2. PUT raw zip (if #1 failed)
           if [ "$UPLOAD_OK" = false ]; then
+            echo "--- PUT /v1/apps/$APP_ID (Content-Type: application/zip) ---"
             CODE=$(curl -s -w "%{http_code}" -X PUT \
               -o /tmp/up2.json \
               -H "Authorization: Bearer $VIBE_KEY" \
               -H "Content-Type: application/zip" \
               --data-binary @ork-reports.zip \
               "$VIBE_URL/apps/$APP_ID")
-            echo "PUT zip → HTTP $CODE | $(cat /tmp/up2.json)"
-            [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]] && UPLOAD_OK=true
+            echo "HTTP $CODE | $(cat /tmp/up2.json)"
+            [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]] && UPLOAD_OK=true || true
           fi
 
-          # 3. PATCH raw zip
           if [ "$UPLOAD_OK" = false ]; then
+            echo "--- PATCH /v1/apps/$APP_ID (Content-Type: application/zip) ---"
             CODE=$(curl -s -w "%{http_code}" -X PATCH \
               -o /tmp/up3.json \
               -H "Authorization: Bearer $VIBE_KEY" \
               -H "Content-Type: application/zip" \
               --data-binary @ork-reports.zip \
               "$VIBE_URL/apps/$APP_ID")
-            echo "PATCH zip → HTTP $CODE | $(cat /tmp/up3.json)"
-            [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]] && UPLOAD_OK=true
+            echo "HTTP $CODE | $(cat /tmp/up3.json)"
+            [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]] && UPLOAD_OK=true || true
           fi
 
-          # 4. POST raw zip
           if [ "$UPLOAD_OK" = false ]; then
+            echo "--- POST /v1/apps/$APP_ID (Content-Type: application/zip) ---"
             CODE=$(curl -s -w "%{http_code}" -X POST \
               -o /tmp/up4.json \
               -H "Authorization: Bearer $VIBE_KEY" \
               -H "Content-Type: application/zip" \
               --data-binary @ork-reports.zip \
               "$VIBE_URL/apps/$APP_ID")
-            echo "POST zip → HTTP $CODE | $(cat /tmp/up4.json)"
-            [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]] && UPLOAD_OK=true
+            echo "HTTP $CODE | $(cat /tmp/up4.json)"
+            [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]] && UPLOAD_OK=true || true
+          fi
+
+          # Try PATCH with JSON to trigger deploy / set appUrl
+          if [ "$UPLOAD_OK" = false ]; then
+            echo "--- PATCH /v1/apps/$APP_ID (JSON: deploy trigger) ---"
+            CODE=$(curl -s -w "%{http_code}" -X PATCH \
+              -o /tmp/up5.json \
+              -H "Authorization: Bearer $VIBE_KEY" \
+              -H "Content-Type: application/json" \
+              -d '{"status":"active"}' \
+              "$VIBE_URL/apps/$APP_ID")
+            echo "HTTP $CODE | $(cat /tmp/up5.json)"
+            [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]] && UPLOAD_OK=true || true
           fi
 
           echo "upload_ok=$UPLOAD_OK" >> $GITHUB_OUTPUT
-          echo "::notice::Upload OK: $UPLOAD_OK"
+          echo "::notice::Upload attempted. OK: $UPLOAD_OK"
 
-      # ── Get final app state + URL ─────────────────────────────────────────
-      - name: Get app URL
+      # ── Poll for appUrl (set after deploy) ───────────────────────────────
+      - name: Get app state and URL
         id: url
         env:
           APP_ID: ${{ steps.app.outputs.app_id }}
         run: |
-          echo "=== GET /v1/apps/$APP_ID ==="
-          curl -s -o /tmp/final.json \
-            -H "Authorization: Bearer $VIBE_KEY" \
-            "$VIBE_URL/apps/$APP_ID"
-          cat /tmp/final.json | jq . 2>/dev/null || cat /tmp/final.json
-
-          # Extract URL from any likely field
-          APP_URL=$(jq -r '
-            .url // .data.url // .app_url // .domain // .host //
-            .result.url // .deployment.url // .endpoint //
-            (if .domains then .domains[0] else empty end) //
-            empty
-          ' /tmp/final.json 2>/dev/null | head -1)
-
-          # Also check GET /v1/apps (list) for URL field
-          if [ -z "$APP_URL" ]; then
-            curl -s -o /tmp/apps_list.json \
+          # Poll up to 30s for appUrl to be populated
+          APP_URL=""
+          HANDLER_URL=""
+          for i in 1 2 3; do
+            echo "=== GET /v1/apps/$APP_ID (attempt $i) ==="
+            curl -s -o /tmp/final.json \
               -H "Authorization: Bearer $VIBE_KEY" \
-              "$VIBE_URL/apps"
-            APP_URL=$(jq -r --arg id "$APP_ID" '
-              .data[] | select(.id == $id) |
-              .url // .app_url // .domain // .host // .endpoint // empty
-            ' /tmp/apps_list.json 2>/dev/null | head -1)
-            echo "Full app entry:"
-            jq -r --arg id "$APP_ID" '.data[] | select(.id == $id)' \
-              /tmp/apps_list.json 2>/dev/null || true
-          fi
+              "$VIBE_URL/apps/$APP_ID"
+            cat /tmp/final.json | jq . 2>/dev/null || cat /tmp/final.json
+
+            # appUrl — where our app runs
+            APP_URL=$(jq -r '.data.appUrl // .data.url // .data.domain // .data.endpoint // empty' \
+              /tmp/final.json 2>/dev/null | grep -v null | head -1 || true)
+
+            # handlerUrl — the Bitrix24 handler (always set by Vibecode)
+            HANDLER_URL=$(jq -r '.data.handlerUrl // empty' \
+              /tmp/final.json 2>/dev/null | head -1 || true)
+
+            if [ -n "$APP_URL" ] && [ "$APP_URL" != "null" ]; then
+              echo "::notice::appUrl found: $APP_URL"
+              break
+            fi
+            [ "$i" -lt 3 ] && sleep 10
+          done
+
+          # Extract all useful fields for summary
+          BITRIX_CLIENT_ID=$(jq -r '.data.bitrixClientId // empty' /tmp/final.json 2>/dev/null | head -1 || true)
+          PREFIX=$(jq -r '.data.prefix // empty' /tmp/final.json 2>/dev/null | head -1 || true)
+          SUFFIX=$(jq -r '.data.suffix // empty' /tmp/final.json 2>/dev/null | head -1 || true)
 
           echo "app_url=$APP_URL" >> $GITHUB_OUTPUT
-          if [ -n "$APP_URL" ]; then
-            echo "::notice::🚀 App deployed at: $APP_URL"
+          echo "handler_url=$HANDLER_URL" >> $GITHUB_OUTPUT
+          echo "bitrix_client_id=$BITRIX_CLIENT_ID" >> $GITHUB_OUTPUT
+
+          echo ""
+          echo "=== App fields ==="
+          echo "appUrl        : $APP_URL"
+          echo "handlerUrl    : $HANDLER_URL"
+          echo "bitrixClientId: $BITRIX_CLIENT_ID"
+          echo "prefix/suffix : $PREFIX / $SUFFIX"
+
+          if [ -n "$APP_URL" ] && [ "$APP_URL" != "null" ]; then
+            echo "::notice::App URL: $APP_URL"
           else
-            echo "::warning::App URL not found in API response. Check raw output above."
+            echo "::notice::appUrl still null — archive upload may need a different method"
+            echo "::notice::Use handlerUrl for placement.bind: $HANDLER_URL"
           fi
 
       # ── Artifact ─────────────────────────────────────────────────────────
@@ -206,17 +215,24 @@ jobs:
       - name: Summary
         if: always()
         run: |
+          APP_URL="${{ steps.url.outputs.app_url }}"
+          HANDLER="${{ steps.url.outputs.handler_url }}"
+          CLIENT_ID="${{ steps.url.outputs.bitrix_client_id }}"
+          PLACEMENT_URL="${APP_URL:-$HANDLER}"
+
           echo "=============================================="
           echo "  ORK Reports — Deploy Summary"
           echo "=============================================="
-          echo "  App ID  : ${{ steps.app.outputs.app_id }}"
-          echo "  Upload  : ${{ steps.upload.outputs.upload_ok }}"
-          echo "  App URL : ${{ steps.url.outputs.app_url }}"
+          echo "  App ID         : ${{ steps.app.outputs.app_id }}"
+          echo "  Upload OK      : ${{ steps.upload.outputs.upload_ok }}"
+          echo "  appUrl         : ${APP_URL:-<null — upload pending>}"
+          echo "  handlerUrl     : $HANDLER"
+          echo "  bitrixClientId : $CLIENT_ID"
           echo "=============================================="
           echo ""
-          echo "Bitrix24 left menu placement:"
+          echo "Bitrix24 — регистрация в левом меню:"
           echo "  BX24.callMethod('placement.bind', {"
           echo "    PLACEMENT: 'APPLICATION_LEFT_MENU',"
-          echo "    HANDLER: '${{ steps.url.outputs.app_url }}',"
+          echo "    HANDLER: '$PLACEMENT_URL',"
           echo "    LANG_ALL: { ru: { NAME: 'ОРК — Отчёты' } }"
           echo "  }, console.log);"
