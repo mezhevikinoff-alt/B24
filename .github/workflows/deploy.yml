@@ -57,13 +57,8 @@ jobs:
             "$VIBE_URL/apps")
           echo "GET /v1/apps → $RESP"
 
-          APP_ID=$(echo "$RESP" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-items = d.get('data', [])
-match = next((x for x in items if x.get('name') == '$APP_NAME'), None)
-print(match.get('id', '') if match else '')
-" 2>/dev/null || echo "")
+          APP_ID=$(echo "$RESP" | jq -r --arg n "$APP_NAME" \
+            '.data[] | select(.name == $n) | .id // empty' 2>/dev/null | head -1 || echo "")
           echo "app_id=$APP_ID" >> $GITHUB_OUTPUT
           echo "Existing app_id: '$APP_ID'"
 
@@ -112,13 +107,8 @@ print(match.get('id', '') if match else '')
             RESP3=$(curl -sf \
               -H "Authorization: Bearer $VIBE_KEY" \
               "$VIBE_URL/apps")
-            APP_ID=$(echo "$RESP3" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-items = d.get('data', [])
-match = next((x for x in items if x.get('name') == '$APP_NAME'), None)
-print(match.get('id', '') if match else '')
-" 2>/dev/null || echo "")
+            APP_ID=$(echo "$RESP3" | jq -r --arg n "$APP_NAME" \
+              '.data[] | select(.name == $n) | .id // empty' 2>/dev/null | head -1 || echo "")
             echo "After create, app_id from list: '$APP_ID'"
           fi
 
