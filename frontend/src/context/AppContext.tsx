@@ -25,19 +25,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [allUsers, setAllUsers] = useState<BX24User[]>([]);
 
   useEffect(() => {
-    // Vibecode gateway injects X-Vibe-User-Id etc. on all requests to the backend.
     fetch('/api/me')
       .then((r) => r.json())
-      .then(async (me: { userId?: string; userName?: string }) => {
+      .then(async (me: { userId?: string; userName?: string; isAdmin?: boolean }) => {
+        setIsAdmin(me.isAdmin === true);
         if (me.userId) {
           try {
             const full = await getCurrentUserFull(me.userId);
-            if (full) {
-              setCurrentUser(full);
-              setIsAdmin(full.IS_ADMIN === true || full.IS_ADMIN === 'Y');
-            }
+            if (full) setCurrentUser(full);
           } catch {
-            // show app without user info
+            // show app without full user info
           }
         }
         setIsReady(true);

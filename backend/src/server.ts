@@ -24,12 +24,17 @@ function writeJson(file: string, data: unknown) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+const VIBE_APP_KEY = process.env.VIBE_APP_KEY || '';
+
 // GET /api/me — user info injected by Vibecode gateway
 app.get('/api/me', (req, res) => {
+  const encodedName = req.headers['x-vibe-user-name-encoded'] as string | undefined;
+  const role = req.headers['x-vibe-user-role'] as string | undefined;
   res.json({
     userId: req.headers['x-vibe-user-id'] || null,
-    userName: req.headers['x-vibe-user-name'] || null,
+    userName: encodedName ? decodeURIComponent(encodedName) : null,
     portalId: req.headers['x-vibe-portal-id'] || null,
+    isAdmin: role === 'ADMIN',
   });
 });
 
