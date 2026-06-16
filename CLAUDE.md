@@ -2,10 +2,16 @@
 
 ## Инфраструктура
 - Репозиторий: https://github.com/mezhevikinoff-alt/B24
-- Сервер Вайбкода: https://app-7ef23f885c9b.vibecode.bitrix24.tech
+- Сервер приложения: https://app-7ef23f885c9b.vibecode.bitrix24.tech
 - Портал Битрикс24: credburo.bitrix24.ru
-- Ключ авторизации: ORK Reports (vibe_app_local_6a3...)
+- Ключ авторизации Vibecode API: `vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9`
 - Деплой: автоматически через GitHub Actions при push в ветку main
+
+## Deploy API
+- Endpoint: `POST https://vibecode.bitrix24.tech/v1/infra/servers/5b93084a-2124-4a42-a589-52c27075da3f/exec`
+- Используется для выполнения shell-команд на сервере (git pull + build + pm2 restart)
+- Auth: `Authorization: Bearer <VIBE_KEY>`
+- Body: `{"command": "<shell command>"}`
 
 ## Что делает приложение
 - График учёта рабочего времени (данные из timeman Битрикс24)
@@ -34,3 +40,4 @@
 
 ## История изменений
 - 16.06.2025 — создано приложение, настроен деплой через GitHub Actions
+- 16.06.2026 — переключён деплой на Vibecode Infra exec API (POST /v1/infra/servers/{id}/exec)
