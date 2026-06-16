@@ -2,15 +2,16 @@
 
 ## Инфраструктура
 - Репозиторий: https://github.com/mezhevikinoff-alt/B24
-- Сервер приложения: https://app-7ef23f885c9b.vibecode.bitrix24.tech
+- Сервер приложения: https://app-214265deb83b.vibecode.bitrix24.tech
 - Портал Битрикс24: credburo.bitrix24.ru
 - Ключ авторизации Vibecode API: `vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9`
 - Деплой: автоматически через GitHub Actions при push в ветку main
 
 ## Deploy API
-- Endpoint: `POST https://vibecode.bitrix24.tech/v1/infra/servers/516352d8-4648-454b-a885-1b6f496ee4eb/deploy`
-- Сервер "ОРК Статистика": `https://app-5bd5009c58b5.vibecode.bitrix24.tech`
+- Endpoint: `POST https://vibecode.bitrix24.tech/v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d/deploy`
+- Сервер "ОРК Статистика": `https://app-214265deb83b.vibecode.bitrix24.tech`
 - Auth: `Authorization: Bearer <VIBE_INFRA_KEY>` (GitHub secret)
+- App key (vibe_app): хранится в GitHub secret `VIBE_APP_KEY`
 
 ## Что делает приложение
 - График учёта рабочего времени (данные из timeman Битрикс24)
@@ -39,4 +40,4 @@
 
 ## История изменений
 - 16.06.2025 — создано приложение, настроен деплой через GitHub Actions
-- 16.06.2026 — переключён деплой на Vibecode Infra exec API (POST /v1/infra/servers/{id}/exec)
+- 16.06.2026 — переключён деплой на Vibecode Infra deploy API (POST /v1/infra/servers/{id}/deploy)
