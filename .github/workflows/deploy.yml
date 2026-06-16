@@ -6,18 +6,15 @@ on:
   workflow_dispatch:
 
 env:
-  VIBE_KEY: ${{ secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
+  VIBE_KEY:      ${{ secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
   VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY }}
+  DEPLOY_URL: https://vibecode.bitrix24.tech/v1/infra/servers/5b93084a-2124-4a42-a589-52c27075da3f/deploy
   VIBE_API_URL: https://vibecode.bitrix24.tech/v1
-  EXEC_URL: https://vibecode.bitrix24.tech/v1/infra/servers/5b93084a-2124-4a42-a589-52c27075da3f/exec
-  APP_SERVER: https://app-7ef23f885c9b.vibecode.bitrix24.tech
-  APP_ID: b6e86834-8b84-42c4-be4b-2bd2b092aa91
-  APP_NAME: ork-reports
-  REPO: mezhevikinoff-alt/B24
-  BRANCH: main
+  APP_SERVER:  https://app-7ef23f885c9b.vibecode.bitrix24.tech
+  APP_ID:      b6e86834-8b84-42c4-be4b-2bd2b092aa91
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -26,85 +23,47 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # ── Build ─────────────────────────────────────────────────────────────
-      - name: Build frontend
-        working-directory: frontend
-        run: npm install && npm run build
-
-      - name: Build backend
-        working-directory: backend
-        run: npm install && npm run build
-
-      - name: Package
-        run: |
-          mkdir -p _pkg
-          cp -r backend/dist    _pkg/
-          cp -r backend/public  _pkg/ 2>/dev/null || true
-          cp backend/package.json _pkg/
-          cp backend/package-lock.json _pkg/ 2>/dev/null || true
-          cd _pkg && npm install --omit=dev && cd ..
-          tar czf ork-reports.tar.gz -C _pkg .
-          echo "Archive: $(du -sh ork-reports.tar.gz | cut -f1)"
-
-      # ── Deploy via exec API ───────────────────────────────────────────────
-      # API format confirmed: POST {"command": "..."} with Authorization: Bearer <key>
-      # Error 403 WRONG_KEY means the key doesn't own this server.
-      # Set VIBE_INFRA_KEY secret to the key that created the server.
-      - name: Deploy via exec — git clone/pull + build + restart
+      # ── Deploy via Vibecode Infra deploy API ──────────────────────────────
+      - name: Deploy to Vibecode server
         id: deploy
         run: |
-          echo "=== Deploy via exec API: $EXEC_URL ==="
-
-          DEPLOY_CMD='set -e
-            APP_DIR=${APP_DIR:-/home/app/ork-reports}
-            echo "Working dir: $APP_DIR"
-            if [ -d "$APP_DIR/.git" ]; then
-              cd "$APP_DIR"
-              git fetch origin
-              git reset --hard origin/main
-            else
-              mkdir -p "$(dirname $APP_DIR)"
-              git clone https://github.com/mezhevikinoff-alt/B24.git "$APP_DIR"
-              cd "$APP_DIR"
-            fi
-            cd frontend && npm install --silent && npm run build && cd ..
-            cd backend  && npm install --silent && npm run build && cd ..
-            if command -v pm2 >/dev/null 2>&1; then
-              pm2 describe ork-reports >/dev/null 2>&1 \
-                && pm2 restart ork-reports \
-                || pm2 start backend/dist/server.js --name ork-reports
-            fi
-            echo "=== DEPLOY DONE ==="'
+          SOURCE_URL="https://github.com/${{ github.repository }}/archive/refs/heads/${{ github.ref_name }}.tar.gz"
+          echo "=== POST $DEPLOY_URL?stream=false ==="
+          echo "Source: $SOURCE_URL"
 
           CODE=$(curl -s -w "%{http_code}" -X POST \
-            -o /tmp/exec_deploy.json \
+            -o /tmp/deploy.json \
             -H "Authorization: Bearer $VIBE_INFRA_KEY" \
             -H "Content-Type: application/json" \
-            -d "$(jq -n --arg cmd "$DEPLOY_CMD" '{"command":$cmd}')" \
-            "$EXEC_URL" 2>/dev/null || echo "000")
+            -H "X-Skip-Source-Snapshot: deploy from GitHub" \
+            -d "$(jq -n \
+              --arg url "$SOURCE_URL" \
+              '{
+                source: {url: $url},
+                runtime: "node20",
+                install: "cd frontend && npm install && npm run build && cd ../backend && npm install && npm run build",
+                start: "node backend/dist/server.js",
+                port: 3000,
+                env: {NODE_ENV: "production", PORT: "3000"}
+              }')" \
+            "$DEPLOY_URL?stream=false")
 
-          RESP=$(cat /tmp/exec_deploy.json 2>/dev/null || true)
-          echo "HTTP $CODE | $RESP"
+          echo "HTTP $CODE"
+          cat /tmp/deploy.json | jq . 2>/dev/null || cat /tmp/deploy.json
+          echo "deploy_code=$CODE" >> $GITHUB_OUTPUT
 
           if [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]]; then
             echo "deployed=true" >> $GITHUB_OUTPUT
-            echo "::notice::Deployed via exec API (HTTP $CODE)"
-          elif [[ "$CODE" == "403" ]]; then
-            echo "deployed=false" >> $GITHUB_OUTPUT
-            echo "::error::HTTP 403 WRONG_KEY — set VIBE_INFRA_KEY secret to the key that owns server 5b93084a-2124-4a42-a589-52c27075da3f"
+            echo "::notice::Deployed successfully (HTTP $CODE)"
           else
             echo "deployed=false" >> $GITHUB_OUTPUT
-            echo "::warning::Exec API returned HTTP $CODE"
+            echo "::error::Deploy failed with HTTP $CODE"
           fi
 
       # ── PATCH appUrl on Vibecode management API ───────────────────────────
       - name: Set appUrl on Vibecode API
         id: set_url
+        if: always()
         run: |
           echo "=== PATCH $VIBE_API_URL/apps/$APP_ID ==="
           CODE=$(curl -s -w "%{http_code}" -X PATCH \
@@ -119,52 +78,22 @@ jobs:
             | grep -v '^null$' | head -1 || true)
           echo "app_url=${APP_URL:-$APP_SERVER}" >> $GITHUB_OUTPUT
 
-      # ── Deploy frontend to GitHub Pages ───────────────────────────────────
-      - name: Deploy frontend to GitHub Pages
-        id: pages
-        continue-on-error: true
-        run: |
-          mkdir -p /tmp/gh-pages
-          cp -r backend/public/. /tmp/gh-pages/
-          git config user.email "actions@github.com"
-          git config user.name  "GitHub Actions"
-          cd /tmp/gh-pages
-          git init && git checkout -b gh-pages
-          git add -A
-          git commit -m "Deploy ORK frontend"
-          git remote add origin \
-            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
-          git push origin gh-pages --force
-          PAGES_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
-          echo "pages_url=$PAGES_URL" >> $GITHUB_OUTPUT
-          echo "GitHub Pages: $PAGES_URL"
-
-      # ── Artifact ──────────────────────────────────────────────────────────
-      - name: Upload artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ork-reports-${{ github.sha }}
-          path: ork-reports.tar.gz
-          retention-days: 30
-
       # ── Summary ───────────────────────────────────────────────────────────
       - name: Summary
         if: always()
         env:
           DEPLOYED:  ${{ steps.deploy.outputs.deployed }}
+          HTTP_CODE: ${{ steps.deploy.outputs.deploy_code }}
           APP_URL:   ${{ steps.set_url.outputs.app_url }}
-          PAGES_URL: ${{ steps.pages.outputs.pages_url }}
         run: |
           FINAL_URL="${APP_URL:-$APP_SERVER}"
 
           echo "================================================================"
           echo "  ОРК Отчёты — Deploy Summary"
           echo "================================================================"
-          echo "  Exec deploy OK     : ${DEPLOYED:-false}"
-          echo "  App server         : $APP_SERVER"
-          echo "  appUrl (Vibecode)  : ${APP_URL:-<не установлен>}"
-          echo "  GitHub Pages       : ${PAGES_URL:-<не задеплоен>}"
+          echo "  Deploy status  : ${DEPLOYED:-false} (HTTP ${HTTP_CODE:-?})"
+          echo "  App server     : $APP_SERVER"
+          echo "  appUrl         : ${APP_URL:-<не установлен>}"
           echo "================================================================"
           echo ""
           echo "Встройка в левое меню Битрикс24:"
@@ -174,8 +103,3 @@ jobs:
           echo "    HANDLER:   '$FINAL_URL',"
           echo "    LANG_ALL:  { ru: { NAME: 'ОРК — Отчёты' } }"
           echo "  }, console.log);"
-          echo ""
-          if [ "${DEPLOYED:-false}" != "true" ]; then
-            echo "::warning::Exec deploy did not succeed."
-            echo "To fix: add secret VIBE_INFRA_KEY = <key that owns server 5b93084a-...>"
-          fi
