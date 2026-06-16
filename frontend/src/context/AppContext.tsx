@@ -4,6 +4,7 @@ import { bx24Init, bx24IsAdmin, getCurrentUserFull, bx24GetUser } from '../api/b
 
 interface AppCtx {
   isReady: boolean;
+  isPortal: boolean;
   isAdmin: boolean;
   currentUser: BX24User | null;
   allUsers: BX24User[];
@@ -12,6 +13,7 @@ interface AppCtx {
 
 const Ctx = createContext<AppCtx>({
   isReady: false,
+  isPortal: false,
   isAdmin: false,
   currentUser: null,
   allUsers: [],
@@ -20,27 +22,31 @@ const Ctx = createContext<AppCtx>({
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [isReady, setIsReady] = useState(false);
+  const [isPortal, setIsPortal] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [currentUser, setCurrentUser] = useState<BX24User | null>(null);
   const [allUsers, setAllUsers] = useState<BX24User[]>([]);
 
   useEffect(() => {
-    bx24Init().then(async () => {
-      const admin = bx24IsAdmin();
-      setIsAdmin(admin);
-      try {
-        const raw = bx24GetUser();
-        const full = await getCurrentUserFull(raw.ID);
-        setCurrentUser(full);
-      } catch {
-        // fallback
+    bx24Init().then(async (inPortal) => {
+      setIsPortal(inPortal);
+      if (inPortal) {
+        const admin = bx24IsAdmin();
+        setIsAdmin(admin);
+        try {
+          const raw = bx24GetUser();
+          const full = await getCurrentUserFull(raw.ID);
+          setCurrentUser(full);
+        } catch {
+          // fallback
+        }
       }
       setIsReady(true);
     });
   }, []);
 
   return (
-    <Ctx.Provider value={{ isReady, isAdmin, currentUser, allUsers, setAllUsers }}>
+    <Ctx.Provider value={{ isReady, isPortal, isAdmin, currentUser, allUsers, setAllUsers }}>
       {children}
     </Ctx.Provider>
   );

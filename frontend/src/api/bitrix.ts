@@ -1,9 +1,17 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 declare const BX24: any;
 
-export function bx24Init(): Promise<void> {
+export function bx24Init(): Promise<boolean> {
   return new Promise((resolve) => {
-    BX24.init(resolve);
+    if (typeof BX24 === 'undefined') {
+      resolve(false);
+      return;
+    }
+    const timer = setTimeout(() => resolve(false), 5000);
+    BX24.init(() => {
+      clearTimeout(timer);
+      resolve(true);
+    });
   });
 }
 
