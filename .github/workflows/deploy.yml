@@ -33,7 +33,7 @@ jobs:
 
           CODE=$(curl -s -w "%{http_code}" -X POST \
             -o /tmp/deploy.json \
-            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
+            -H "X-Api-Key: $VIBE_INFRA_KEY" \
             -H "Content-Type: application/json" \
             -H "X-Skip-Source-Snapshot: deploy from GitHub" \
             -d "$(jq -n \
