@@ -35,6 +35,7 @@ jobs:
       - name: Package app
         id: package
         run: |
+          sudo apt-get install -y zip -q
           mkdir -p _pkg
           cp -r backend/dist   _pkg/
           cp -r backend/public _pkg/ 2>/dev/null || true
@@ -69,47 +70,23 @@ jobs:
           # ── 2. Create if not found ───────────────────────────────────────
           if [ -z "$APP_ID" ]; then
             echo ""
-            echo "=== POST /v1/apps — attempt 1: minimal JSON ==="
+            echo "=== POST /v1/apps — create with title + scopes ==="
+            # API requires: title (display name) and scopes (Bitrix24 OAuth scopes)
             CODE=$(curl -s -w "%{http_code}" -X POST \
               -o /tmp/create1.json \
               -H "Authorization: Bearer $VIBE_KEY" \
               -H "Content-Type: application/json" \
-              -d "{\"name\":\"$APP_NAME\",\"runtime\":\"nodejs20\",\"entrypoint\":\"dist/server.js\"}" \
+              -d "{
+                \"title\": \"ORK Reports\",
+                \"name\": \"$APP_NAME\",
+                \"runtime\": \"nodejs20\",
+                \"entrypoint\": \"dist/server.js\",
+                \"scopes\": [\"crm\", \"timeman\", \"user\", \"placement\"]
+              }" \
               "$VIBE_URL/apps")
             echo "HTTP $CODE | $(cat /tmp/create1.json)"
             APP_ID=$(jq -r '.id // .data.id // .app.id // .result.id // empty' \
               /tmp/create1.json 2>/dev/null | head -1)
-          fi
-
-          if [ -z "$APP_ID" ]; then
-            echo ""
-            echo "=== POST /v1/apps — attempt 2: multipart form ==="
-            CODE=$(curl -s -w "%{http_code}" -X POST \
-              -o /tmp/create2.json \
-              -H "Authorization: Bearer $VIBE_KEY" \
-              -F "name=$APP_NAME" \
-              -F "runtime=nodejs20" \
-              -F "entrypoint=dist/server.js" \
-              "$VIBE_URL/apps")
-            echo "HTTP $CODE | $(cat /tmp/create2.json)"
-            APP_ID=$(jq -r '.id // .data.id // .app.id // .result.id // empty' \
-              /tmp/create2.json 2>/dev/null | head -1)
-          fi
-
-          if [ -z "$APP_ID" ]; then
-            echo ""
-            echo "=== POST /v1/apps — attempt 3: multipart + archive ==="
-            CODE=$(curl -s -w "%{http_code}" -X POST \
-              -o /tmp/create3.json \
-              -H "Authorization: Bearer $VIBE_KEY" \
-              -F "name=$APP_NAME" \
-              -F "runtime=nodejs20" \
-              -F "entrypoint=dist/server.js" \
-              -F "file=@ork-reports.tar.gz;type=application/gzip" \
-              "$VIBE_URL/apps")
-            echo "HTTP $CODE | $(cat /tmp/create3.json)"
-            APP_ID=$(jq -r '.id // .data.id // .app.id // .result.id // empty' \
-              /tmp/create3.json 2>/dev/null | head -1)
           fi
 
           # ── 3. Re-read list (some APIs return 201 with empty body) ───────
@@ -136,44 +113,53 @@ jobs:
           echo "::notice::App ID resolved: $APP_ID"
 
       # ── Upload archive ────────────────────────────────────────────────────
+      # multipart hits 413 (FST_ERR_CTP_BODY_TOO_LARGE) — use raw binary upload
       - name: Upload archive to Vibecode
         id: upload
         env:
           APP_ID: ${{ steps.app.outputs.app_id }}
         run: |
-          echo "=== Uploading ork-reports.tar.gz to app $APP_ID ==="
+          echo "=== Uploading archive to app $APP_ID (raw binary, no multipart) ==="
 
-          echo "--- PUT /v1/apps/$APP_ID (field: file) ---"
+          # Also prepare a zip variant (some platforms prefer zip over tar.gz)
+          cd _pkg && zip -r ../ork-reports.zip . -q && cd ..
+          echo "zip size: $(du -sh ork-reports.zip | cut -f1)"
+
+          echo "--- PUT /v1/apps/$APP_ID — raw tar.gz ---"
           CODE=$(curl -s -w "%{http_code}" -X PUT \
-            -o /tmp/put1.json \
+            -o /tmp/put_tgz.json \
             -H "Authorization: Bearer $VIBE_KEY" \
-            -F "file=@ork-reports.tar.gz;type=application/gzip" \
+            -H "Content-Type: application/gzip" \
+            --data-binary @ork-reports.tar.gz \
             "$VIBE_URL/apps/$APP_ID")
-          echo "HTTP $CODE | $(cat /tmp/put1.json)"
+          echo "HTTP $CODE | $(cat /tmp/put_tgz.json)"
 
-          echo "--- PUT /v1/apps/$APP_ID (field: archive) ---"
+          echo "--- PUT /v1/apps/$APP_ID — raw zip ---"
           CODE=$(curl -s -w "%{http_code}" -X PUT \
-            -o /tmp/put2.json \
+            -o /tmp/put_zip.json \
             -H "Authorization: Bearer $VIBE_KEY" \
-            -F "archive=@ork-reports.tar.gz;type=application/gzip" \
+            -H "Content-Type: application/zip" \
+            --data-binary @ork-reports.zip \
             "$VIBE_URL/apps/$APP_ID")
-          echo "HTTP $CODE | $(cat /tmp/put2.json)"
+          echo "HTTP $CODE | $(cat /tmp/put_zip.json)"
 
-          echo "--- PATCH /v1/apps/$APP_ID (field: file) ---"
+          echo "--- PATCH /v1/apps/$APP_ID — raw zip ---"
           CODE=$(curl -s -w "%{http_code}" -X PATCH \
-            -o /tmp/patch1.json \
+            -o /tmp/patch_zip.json \
             -H "Authorization: Bearer $VIBE_KEY" \
-            -F "file=@ork-reports.tar.gz;type=application/gzip" \
+            -H "Content-Type: application/zip" \
+            --data-binary @ork-reports.zip \
             "$VIBE_URL/apps/$APP_ID")
-          echo "HTTP $CODE | $(cat /tmp/patch1.json)"
+          echo "HTTP $CODE | $(cat /tmp/patch_zip.json)"
 
-          echo "--- POST /v1/apps/$APP_ID (field: file) ---"
+          echo "--- POST /v1/apps/$APP_ID — raw zip ---"
           CODE=$(curl -s -w "%{http_code}" -X POST \
-            -o /tmp/post1.json \
+            -o /tmp/post_zip.json \
             -H "Authorization: Bearer $VIBE_KEY" \
-            -F "file=@ork-reports.tar.gz;type=application/gzip" \
+            -H "Content-Type: application/zip" \
+            --data-binary @ork-reports.zip \
             "$VIBE_URL/apps/$APP_ID")
-          echo "HTTP $CODE | $(cat /tmp/post1.json)"
+          echo "HTTP $CODE | $(cat /tmp/post_zip.json)"
 
       # ── Scan sub-paths to find deploy/upload endpoints ────────────────────
       - name: Scan sub-paths

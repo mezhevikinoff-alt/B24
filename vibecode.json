@@ -1,17 +1,12 @@
 {
   "name": "ork-reports",
-  "description": "ОРК — Отчёты. Приложение для отдела по работе с клиентами.",
+  "title": "ORK Reports",
+  "description": "ОРК — Отчёты. Приложение для отдела по работе с клиентами кредитно-брокерской компании.",
   "runtime": "nodejs20",
-  "entrypoint": "backend/dist/server.js",
-  "build": {
-    "commands": [
-      "cd frontend && npm ci && npm run build",
-      "cd backend && npm ci && npm run build"
-    ]
-  },
+  "entrypoint": "dist/server.js",
+  "scopes": ["crm", "timeman", "user", "placement"],
   "env": {
     "PORT": "3001",
     "NODE_ENV": "production"
-  },
-  "health_check": "/api/corrections/2024/1"
+  }
 }
