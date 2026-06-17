@@ -67,50 +67,31 @@ jobs:
           fi
 
       # ── PATCH appUrl on Vibecode management API ───────────────────────────
+      # VIBE_INFRA_KEY works (HTTP 400 vs 401 for VIBE_KEY), handlerUrl is readonly
       - name: Set appUrl on Vibecode API
         id: set_url
         if: always()
-        env:
-          VIBE_APP_KEY: ${{ secrets.VIBE_APP_KEY }}
         run: |
-          PATCH_BODY="{\"appUrl\":\"$APP_SERVER\",\"handlerUrl\":\"$APP_SERVER\"}"
-
-          # Try 1: VIBE_APP_KEY (app-specific key, preferred)
-          if [[ -n "$VIBE_APP_KEY" ]]; then
-            CODE=$(curl -s -w "%{http_code}" -X PATCH \
-              -o /tmp/patch_url.json \
-              -H "X-Api-Key: $VIBE_APP_KEY" \
-              -H "Content-Type: application/json" \
-              -d "$PATCH_BODY" \
-              "$VIBE_API_URL/apps/$APP_ID")
-            echo "PATCH with VIBE_APP_KEY (X-Api-Key): HTTP $CODE"
-            cat /tmp/patch_url.json | jq . 2>/dev/null || cat /tmp/patch_url.json
-          fi
-
-          # Try 2: VIBE_INFRA_KEY with X-Api-Key
-          CODE2=$(curl -s -w "%{http_code}" -X PATCH \
-            -o /tmp/patch_infra.json \
+          CODE=$(curl -s -w "%{http_code}" -X PATCH \
+            -o /tmp/patch_url.json \
             -H "X-Api-Key: $VIBE_INFRA_KEY" \
             -H "Content-Type: application/json" \
-            -d "$PATCH_BODY" \
+            -d "{\"appUrl\":\"$APP_SERVER\"}" \
             "$VIBE_API_URL/apps/$APP_ID")
-          echo "PATCH with VIBE_INFRA_KEY (X-Api-Key): HTTP $CODE2"
-          cat /tmp/patch_infra.json | jq . 2>/dev/null || cat /tmp/patch_infra.json
-
-          # Try 3: VIBE_KEY fallback
-          CODE3=$(curl -s -w "%{http_code}" -X PATCH \
-            -o /tmp/patch_vibe.json \
-            -H "X-Api-Key: $VIBE_KEY" \
-            -H "Content-Type: application/json" \
-            -d "$PATCH_BODY" \
-            "$VIBE_API_URL/apps/$APP_ID")
-          echo "PATCH with VIBE_KEY (X-Api-Key): HTTP $CODE3"
-          cat /tmp/patch_vibe.json | jq . 2>/dev/null || cat /tmp/patch_vibe.json
-
-          # Use whichever succeeded
-          FINAL_CODE="${CODE:-$CODE2}"
-          APP_URL=$(jq -r '.data.appUrl // empty' /tmp/patch_url.json /tmp/patch_infra.json /tmp/patch_vibe.json 2>/dev/null | grep -v '^null$' | grep -v '^$' | head -1 || true)
+          echo "PATCH appUrl with VIBE_INFRA_KEY: HTTP $CODE"
+          cat /tmp/patch_url.json | jq . 2>/dev/null || cat /tmp/patch_url.json
+          APP_URL=$(jq -r '.data.appUrl // empty' /tmp/patch_url.json 2>/dev/null | grep -v '^null$' | grep -v '^$' | head -1 || true)
           echo "app_url=${APP_URL:-$APP_SERVER}" >> $GITHUB_OUTPUT
+
+      # ── Repair tunnel routing if needed ──────────────────────────────────
+      - name: Repair tunnel routing (if gateway routing failed)
+        if: always()
+        run: |
+          echo "=== POST repair (ensure tunnel routing converges) ==="
+          curl -s -X POST \
+            -H "X-Api-Key: $VIBE_INFRA_KEY" \
+            "https://vibecode.bitrix24.tech/v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d/repair" \
+            | jq . 2>/dev/null || echo "repair call done"
 
       # ── Summary ───────────────────────────────────────────────────────────
       - name: Summary
