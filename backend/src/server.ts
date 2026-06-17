@@ -58,21 +58,16 @@ function getCookies(req: Request): Record<string, string> {
   return cookies;
 }
 
-// Strip "Bearer " prefix if present — Bitrix24 REST API expects raw token
-function extractToken(raw: string | undefined): string | undefined {
-  if (!raw) return undefined;
-  if (raw.toLowerCase().startsWith('bearer ')) return raw.slice(7).trim();
-  return raw.trim() || undefined;
-}
-
 const VIBE_APP_KEY = process.env.VIBE_APP_KEY || '';
 const BX24_DOMAIN = process.env.BX24_DOMAIN || 'credburo.bitrix24.ru';
+const VIBE_API = 'https://vibecode.bitrix24.tech/v1';
 // Cookie name used to store Bitrix24 auth token received from handler POST
 const AUTH_COOKIE = 'bx_auth';
 
 console.log(`[${ts()}] ORK Server starting on port ${PORT}`);
 console.log(`[${ts()}] VIBE_APP_KEY: ${VIBE_APP_KEY ? '[SET, length=' + VIBE_APP_KEY.length + ']' : '[MISSING]'}`);
 console.log(`[${ts()}] BX24_DOMAIN: ${BX24_DOMAIN}`);
+console.log(`[${ts()}] VIBE_API: ${VIBE_API}`);
 console.log(`[${ts()}] NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
 
 // ─── Bitrix24 handler POST ────────────────────────────────────────────────────
@@ -172,21 +167,10 @@ app.get('/api/debug', (req, res) => {
   });
 });
 
-// POST /api/bx — proxy Bitrix24 REST API
-// Auth priority: 1) x-vibe-authorization header (Vibecode injection)
-//                2) bx_auth cookie (Bitrix24 handler POST flow)
+// POST /api/bx — proxy to Vibecode entity API using x-vibe-authorization
+// Maps BX24 method names to Vibecode REST endpoints and normalises responses.
 app.post('/api/bx', async (req, res) => {
-  const rawVibeAuth = req.headers['x-vibe-authorization'] as string | undefined;
-  const bxAuth = (req.headers['x-bx-auth'] as string | undefined)?.trim() || undefined;
-
-  const cookies = getCookies(req);
-  const cookieAuth = cookies[AUTH_COOKIE] || undefined;
-
-  // x-vibe-authorization is a Vibecode internal token, NOT a valid Bitrix24 OAuth token.
-  // Only use it for logging; never pass it to Bitrix24 REST API.
-  const authorization = bxAuth || cookieAuth;
-
-  const portalId = req.headers['x-vibe-portal-id'] as string | undefined;
+  const vibeToken = req.headers['x-vibe-authorization'] as string | undefined;
   const { method, params } = req.body as { method: string; params?: Record<string, unknown> };
 
   if (!method) {
@@ -194,52 +178,126 @@ app.post('/api/bx', async (req, res) => {
     return;
   }
 
-  if (!authorization) {
-    console.warn(`[${ts()}] [bx] ${method}: NO AUTH — vibeHeader=${!!rawVibeAuth}(skipped), bxSdk=${!!bxAuth}, cookie=${!!cookieAuth}, portalId=${portalId || 'null'} — returning empty result`);
+  if (!vibeToken) {
+    console.warn(`[${ts()}] [bx] ${method}: NO x-vibe-authorization — returning empty result`);
     res.json({ result: [], next: undefined });
     return;
   }
 
-  const authSource = bxAuth ? 'bx24-sdk' : 'cookie';
+  const t0 = Date.now();
+
+  // Build Vibecode API request parameters based on BX24 method name
+  let vibeUrl: string;
+  let vibeMethod: string;
+  let vibeBody: unknown;
+
+  switch (method) {
+    case 'user.get': {
+      vibeUrl = `${VIBE_API}/users`;
+      vibeMethod = 'GET';
+      const qp = new URLSearchParams();
+      const filter = ((params?.FILTER ?? params?.filter) as Record<string, unknown>) || {};
+      if (filter.ACTIVE !== undefined) qp.set('filter[ACTIVE]', filter.ACTIVE ? 'Y' : 'N');
+      if (params?.ID) qp.set('filter[ID]', String(params.ID));
+      const select = ((params?.SELECT ?? params?.select) as string[]) || [];
+      if (select.length) qp.set('select', select.join(','));
+      qp.set('limit', '200');
+      const startU = params?.start as number | undefined;
+      if (startU) qp.set('offset', String(startU));
+      vibeUrl += '?' + qp.toString();
+      break;
+    }
+    case 'crm.lead.list': {
+      vibeUrl = `${VIBE_API}/leads/search`;
+      vibeMethod = 'POST';
+      const filter = (params?.FILTER ?? params?.filter) || {};
+      const select = (params?.SELECT ?? params?.select) || [];
+      const startL = params?.start as number | undefined;
+      vibeBody = { filter, select, limit: 50, ...(startL ? { offset: startL } : {}) };
+      break;
+    }
+    case 'crm.status.list': {
+      vibeUrl = `${VIBE_API}/statuses`;
+      vibeMethod = 'GET';
+      const filterS = ((params?.FILTER ?? params?.filter) as Record<string, string>) || {};
+      const qpS = new URLSearchParams();
+      if (filterS.ENTITY_ID) qpS.set('filter[ENTITY_ID]', filterS.ENTITY_ID);
+      const qpSStr = qpS.toString();
+      if (qpSStr) vibeUrl += '?' + qpSStr;
+      break;
+    }
+    case 'crm.category.list': {
+      vibeUrl = `${VIBE_API}/deal-categories`;
+      vibeMethod = 'GET';
+      break;
+    }
+    case 'crm.deal.list': {
+      vibeUrl = `${VIBE_API}/deals/search`;
+      vibeMethod = 'POST';
+      const filterD = (params?.FILTER ?? params?.filter) || {};
+      const selectD = (params?.SELECT ?? params?.select) || [];
+      const startD = params?.start as number | undefined;
+      vibeBody = { filter: filterD, select: selectD, limit: 50, ...(startD ? { offset: startD } : {}) };
+      break;
+    }
+    default: {
+      // Methods without a Vibecode wrapper (e.g. timeman.timecontrol.report.get)
+      console.warn(`[${ts()}] [bx] ${method}: no Vibecode wrapper — returning empty result`);
+      res.json({ result: [], next: undefined });
+      return;
+    }
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => {
     console.error(`[${ts()}] [bx] ${method}: TIMEOUT after 20s`);
     controller.abort();
   }, 20000);
 
-  const t0 = Date.now();
-  const url = `https://${BX24_DOMAIN}/rest/${method}`;
-  console.log(`[${ts()}] [bx] → ${method} url=${url} authSource=${authSource} tokenLen=${authorization.length}`);
+  console.log(`[${ts()}] [bx] → ${method} vibeUrl=${vibeUrl} vibeMethod=${vibeMethod}`);
 
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...(params || {}), auth: authorization }),
+    const fetchOpts: RequestInit = {
+      method: vibeMethod || 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${vibeToken}`,
+      },
       signal: controller.signal,
-    });
+    };
+    if (vibeBody) fetchOpts.body = JSON.stringify(vibeBody);
+
+    const response = await fetch(vibeUrl, fetchOpts);
     clearTimeout(timer);
 
     const text = await response.text();
     const elapsed = Date.now() - t0;
 
-    let data: Record<string, unknown>;
+    let vibeData: { success: boolean; data: unknown; pagination?: { next?: number | string } };
     try {
-      data = JSON.parse(text) as Record<string, unknown>;
+      vibeData = JSON.parse(text) as typeof vibeData;
     } catch {
       console.error(`[${ts()}] [bx] ← ${method}: NON-JSON (HTTP ${response.status}) (${elapsed}ms): ${text.slice(0, 300)}`);
-      res.status(502).json({ error: `Bitrix24 returned non-JSON (HTTP ${response.status})`, raw: text.slice(0, 500) });
+      res.status(502).json({ error: `Vibecode API returned non-JSON (HTTP ${response.status})`, raw: text.slice(0, 500) });
       return;
     }
 
-    if (data.error) {
-      console.error(`[${ts()}] [bx] ← ${method}: BX_ERROR ${data.error} — ${data.error_description ?? ''} (${elapsed}ms)`);
-    } else {
-      const result = data.result;
-      const cnt = Array.isArray(result) ? result.length : (result != null ? 1 : 0);
-      console.log(`[${ts()}] [bx] ← ${method}: OK ${cnt} items, next=${data.next ?? 'none'} (${elapsed}ms)`);
+    if (!vibeData.success) {
+      console.error(`[${ts()}] [bx] ← ${method}: VIBE_ERROR (${elapsed}ms): ${text.slice(0, 300)}`);
+      res.json({ error: 'vibecode_error', raw: vibeData });
+      return;
     }
-    res.json(data);
+
+    // Normalise Vibecode response { success, data, pagination } → BX24 format { result, next }
+    const items = Array.isArray(vibeData.data)
+      ? vibeData.data
+      : vibeData.data != null
+        ? [vibeData.data]
+        : [];
+    const nextOffset = vibeData.pagination?.next ?? undefined;
+
+    console.log(`[${ts()}] [bx] ← ${method}: OK ${items.length} items, next=${nextOffset ?? 'none'} (${elapsed}ms)`);
+    res.json({ result: items, next: nextOffset });
   } catch (err: unknown) {
     clearTimeout(timer);
     const elapsed = Date.now() - t0;

@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import type { BX24User } from '../types';
-import { getCurrentUserFull, setBxAuthToken } from '../api/bitrix';
-import '../bx24.d';
+import { getCurrentUserFull } from '../api/bitrix';
 
 interface AppCtx {
   isReady: boolean;
@@ -19,14 +18,6 @@ const Ctx = createContext<AppCtx>({
   setAllUsers: () => {},
 });
 
-function reportBx24Debug(info: Record<string, unknown>) {
-  fetch('/api/bx24-debug', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(info),
-  }).catch(() => {});
-}
-
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [isReady, setIsReady] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -34,18 +25,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [allUsers, setAllUsers] = useState<BX24User[]>([]);
 
   useEffect(() => {
-    let settled = false;
-
-    const initApp = async (bxToken?: string) => {
-      if (settled) return;
-      settled = true;
-
-      if (bxToken) {
-        setBxAuthToken(bxToken);
-        console.log('[AppContext] BX24 token acquired, len=' + bxToken.length);
-      } else {
-        console.log('[AppContext] No BX24 token — relying on Vibe headers / cookie');
-      }
+    const initApp = async () => {
+      console.log('[AppContext] init — using Vibecode gateway auth (x-vibe-authorization injected by server)');
 
       try {
         const me = await fetch('/api/me').then((r) => r.json()) as {
@@ -69,38 +50,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setIsReady(true);
     };
 
-    if (window.BX24) {
-      // Inside Bitrix24 iframe — wait for SDK handshake
-      window.BX24.init(() => {
-        const auth = window.BX24?.getAuth();
-        reportBx24Debug({
-          event: 'init_fired',
-          hasAuth: !!auth,
-          authKeys: auth ? Object.keys(auth) : null,
-          hasToken: !!(auth?.access_token),
-          tokenLen: auth?.access_token?.length ?? 0,
-          domain: auth?.domain ?? null,
-        });
-        initApp(auth?.access_token ?? undefined);
-      });
-
-      // Safety fallback: if BX24.init never fires (direct browser access), proceed after 5s
-      const timer = setTimeout(() => {
-        if (!settled) {
-          reportBx24Debug({
-            event: 'timeout_fired',
-            hasBX24: !!window.BX24,
-            settled,
-          });
-          initApp();
-        }
-      }, 5000);
-      return () => clearTimeout(timer);
-    } else {
-      // Not in Bitrix24 — proceed immediately (dev / healthcheck access)
-      reportBx24Debug({ event: 'no_bx24_object' });
-      initApp();
-    }
+    void initApp();
   }, []);
 
   return (
