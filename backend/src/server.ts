@@ -251,6 +251,13 @@ app.post('/api/bx', async (req, res) => {
   }
 });
 
+// POST /api/bx24-debug — frontend reports BX24 SDK init status for server-side logging
+app.post('/api/bx24-debug', (req, res) => {
+  const body = req.body as Record<string, unknown>;
+  console.log(`[${ts()}] BX24_DEBUG: ${JSON.stringify(body)}`);
+  res.json({ ok: true });
+});
+
 // Hour corrections: { "YYYY-MM": { "userId": { "YYYY-MM-DD": hours } } }
 app.get('/api/corrections/:year/:month', (req, res) => {
   const key = `${req.params.year}-${req.params.month.padStart(2, '0')}`;
