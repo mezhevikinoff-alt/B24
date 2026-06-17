@@ -295,7 +295,35 @@ app.post('/api/joints/:year/:month', (req, res) => {
 });
 
 // Catch-all: serve React app for all GET requests
-app.get('*', (_req, res) => {
+// Also captures auth token if Vibecode/Bitrix24 passes it as URL param
+app.get('*', (req, res) => {
+  // Log all query params on root to see what Vibecode passes
+  const queryKeys = Object.keys(req.query);
+  if (queryKeys.length > 0) {
+    const safeQuery: Record<string, string> = {};
+    for (const k of queryKeys) {
+      const v = String(req.query[k]);
+      // Redact potential token values but show length
+      const isToken = k.toLowerCase().includes('auth') || k.toLowerCase().includes('token');
+      safeQuery[k] = isToken ? `[len=${v.length}]` : v;
+    }
+    console.log(`[${ts()}] GET ${req.path} — query params: ${JSON.stringify(safeQuery)}`);
+  }
+
+  // Capture auth token from URL params (various Bitrix24/Vibecode formats)
+  const authFromParams =
+    req.query.AUTH_ID ?? req.query.auth_id ??
+    req.query.access_token ?? req.query._auth ??
+    req.query.auth;
+
+  if (authFromParams) {
+    const authStr = String(authFromParams).trim();
+    if (authStr.length > 10) {
+      console.log(`[${ts()}] GET ${req.path} — AUTH in URL param, setting cookie (len=${authStr.length})`);
+      res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${authStr}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=3600`);
+    }
+  }
+
   const indexPath = path.join(__dirname, '..', 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
