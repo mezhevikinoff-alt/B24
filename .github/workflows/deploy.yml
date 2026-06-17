@@ -44,7 +44,7 @@ jobs:
                 install: "cd B24-*/ && cd frontend && npm install && npm run build && cd ../backend && npm install && npm run build",
                 start: "cd B24-*/ && node backend/dist/server.js",
                 port: 3000,
-                env: {NODE_ENV: "production", PORT: "3000", VIBE_APP_KEY: "${{ secrets.VIBE_APP_KEY }}"}
+                env: {NODE_ENV: "production", PORT: "3000", VIBE_APP_KEY: "${{ secrets.VIBE_APP_KEY }}", BX24_DOMAIN: "credburo.bitrix24.ru"}
               }')" \
             "$DEPLOY_URL?stream=false")
 

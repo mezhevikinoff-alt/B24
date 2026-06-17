@@ -29,9 +29,11 @@ function ts() {
 }
 
 const VIBE_APP_KEY = process.env.VIBE_APP_KEY || '';
+const BX24_DOMAIN = process.env.BX24_DOMAIN || 'credburo.bitrix24.ru';
 
 console.log(`[${ts()}] ORK Server starting on port ${PORT}`);
 console.log(`[${ts()}] VIBE_APP_KEY: ${VIBE_APP_KEY ? '[SET, length=' + VIBE_APP_KEY.length + ']' : '[MISSING]'}`);
+console.log(`[${ts()}] BX24_DOMAIN: ${BX24_DOMAIN}`);
 console.log(`[${ts()}] NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
 
 // GET /api/healthcheck
@@ -101,8 +103,8 @@ app.post('/api/bx', async (req, res) => {
     return;
   }
 
-  if (!authorization || !portalId) {
-    console.warn(`[${ts()}] [bx] ${method}: NO AUTH HEADERS (authorization=${!!authorization}, portalId=${portalId || 'null'}) — returning empty result`);
+  if (!authorization) {
+    console.warn(`[${ts()}] [bx] ${method}: NO AUTH HEADERS (authorization=false, portalId=${portalId || 'null'}) — returning empty result`);
     res.json({ result: [], next: undefined });
     return;
   }
@@ -114,10 +116,10 @@ app.post('/api/bx', async (req, res) => {
   }, 20000);
 
   const t0 = Date.now();
-  console.log(`[${ts()}] [bx] → ${method} (portal=${portalId})`);
+  console.log(`[${ts()}] [bx] → ${method} (domain=${BX24_DOMAIN}, portalId=${portalId || 'null'})`);
 
   try {
-    const url = `https://${portalId}/rest/${method}`;
+    const url = `https://${BX24_DOMAIN}/rest/${method}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
