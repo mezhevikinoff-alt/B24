@@ -1,0 +1,31 @@
+name: Read Vibecode /v1/me docs
+
+on:
+  workflow_dispatch:
+
+jobs:
+  read-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: GET /v1/me
+        run: |
+          echo "=== GET /v1/me (unauthenticated) ==="
+          curl -s https://vibecode.bitrix24.tech/v1/me | head -200
+
+          echo ""
+          echo "=== GET /v1/me (with Bearer key) ==="
+          curl -s \
+            -H "Authorization: Bearer vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ10Kn6F7ZsDJ3FMEXqC0C1W4XpJ2_eeb031" \
+            https://vibecode.bitrix24.tech/v1/me
+
+          echo ""
+          echo "=== GET /v1/ (API root) ==="
+          curl -s \
+            -H "Authorization: Bearer vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ10Kn6F7ZsDJ3FMEXqC0C1W4XpJ2_eeb031" \
+            https://vibecode.bitrix24.tech/v1/ | head -100
+
+          echo ""
+          echo "=== GET /v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d ==="
+          curl -s \
+            -H "Authorization: Bearer vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ10Kn6F7ZsDJ3FMEXqC0C1W4XpJ2_eeb031" \
+            https://vibecode.bitrix24.tech/v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d
