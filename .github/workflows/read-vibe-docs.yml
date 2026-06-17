@@ -8,24 +8,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: GET /v1/me
+        env:
+          KEY_USER: vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ10Kn6F7ZsDJ3FMEXqC0C1W4XpJ2_eeb031
+          KEY_INFRA: vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9
         run: |
-          echo "=== GET /v1/me (unauthenticated) ==="
-          curl -s https://vibecode.bitrix24.tech/v1/me | head -200
+          echo "=== GET /v1/me (X-Api-Key: user key with zero) ==="
+          curl -sv \
+            -H "X-Api-Key: $KEY_USER" \
+            https://vibecode.bitrix24.tech/v1/me 2>&1
 
           echo ""
-          echo "=== GET /v1/me (with Bearer key) ==="
+          echo "=== GET /v1/me (X-Api-Key: infra key from CLAUDE.md) ==="
           curl -s \
-            -H "Authorization: Bearer vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ10Kn6F7ZsDJ3FMEXqC0C1W4XpJ2_eeb031" \
+            -H "X-Api-Key: $KEY_INFRA" \
             https://vibecode.bitrix24.tech/v1/me
 
           echo ""
-          echo "=== GET /v1/ (API root) ==="
+          echo "=== GET /v1/me (Authorization: Bearer infra key) ==="
           curl -s \
-            -H "Authorization: Bearer vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ10Kn6F7ZsDJ3FMEXqC0C1W4XpJ2_eeb031" \
-            https://vibecode.bitrix24.tech/v1/ | head -100
+            -H "Authorization: Bearer $KEY_INFRA" \
+            https://vibecode.bitrix24.tech/v1/me
 
           echo ""
-          echo "=== GET /v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d ==="
+          echo "=== GET /v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d (infra key) ==="
           curl -s \
-            -H "Authorization: Bearer vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ10Kn6F7ZsDJ3FMEXqC0C1W4XpJ2_eeb031" \
+            -H "X-Api-Key: $KEY_INFRA" \
             https://vibecode.bitrix24.tech/v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d
