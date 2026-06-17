@@ -178,11 +178,12 @@ app.get('/api/debug', (req, res) => {
 app.post('/api/bx', async (req, res) => {
   const rawVibeAuth = req.headers['x-vibe-authorization'] as string | undefined;
   const vibeAuth = extractToken(rawVibeAuth);
+  const bxAuth = (req.headers['x-bx-auth'] as string | undefined)?.trim() || undefined;
 
   const cookies = getCookies(req);
   const cookieAuth = cookies[AUTH_COOKIE] || undefined;
 
-  const authorization = vibeAuth || cookieAuth;
+  const authorization = vibeAuth || bxAuth || cookieAuth;
 
   const portalId = req.headers['x-vibe-portal-id'] as string | undefined;
   const { method, params } = req.body as { method: string; params?: Record<string, unknown> };
@@ -193,12 +194,12 @@ app.post('/api/bx', async (req, res) => {
   }
 
   if (!authorization) {
-    console.warn(`[${ts()}] [bx] ${method}: NO AUTH — vibeHeader=${!!rawVibeAuth}, cookie=${!!cookieAuth}, portalId=${portalId || 'null'} — returning empty result`);
+    console.warn(`[${ts()}] [bx] ${method}: NO AUTH — vibeHeader=${!!rawVibeAuth}, bxSdk=${!!bxAuth}, cookie=${!!cookieAuth}, portalId=${portalId || 'null'} — returning empty result`);
     res.json({ result: [], next: undefined });
     return;
   }
 
-  const authSource = vibeAuth ? 'vibe-header' : 'cookie';
+  const authSource = vibeAuth ? 'vibe-header' : bxAuth ? 'bx24-sdk' : 'cookie';
   const controller = new AbortController();
   const timer = setTimeout(() => {
     console.error(`[${ts()}] [bx] ${method}: TIMEOUT after 20s`);

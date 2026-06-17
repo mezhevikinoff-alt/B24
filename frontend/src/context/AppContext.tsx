@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import type { BX24User } from '../types';
-import { getCurrentUserFull } from '../api/bitrix';
+import { getCurrentUserFull, setBxAuthToken } from '../api/bitrix';
 
 interface AppCtx {
   isReady: boolean;
@@ -25,9 +25,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [allUsers, setAllUsers] = useState<BX24User[]>([]);
 
   useEffect(() => {
-    fetch('/api/me')
-      .then((r) => r.json())
-      .then(async (me: { userId?: string; userName?: string; isAdmin?: boolean }) => {
+    let settled = false;
+
+    const initApp = async (bxToken?: string) => {
+      if (settled) return;
+      settled = true;
+
+      if (bxToken) {
+        setBxAuthToken(bxToken);
+        console.log('[AppContext] BX24 token acquired, len=' + bxToken.length);
+      } else {
+        console.log('[AppContext] No BX24 token — relying on Vibe headers / cookie');
+      }
+
+      try {
+        const me = await fetch('/api/me').then((r) => r.json()) as {
+          userId?: string;
+          userName?: string;
+          isAdmin?: boolean;
+        };
         setIsAdmin(me.isAdmin === true);
         if (me.userId) {
           try {
@@ -37,9 +53,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             // show app without full user info
           }
         }
-        setIsReady(true);
-      })
-      .catch(() => setIsReady(true));
+      } catch {
+        // show app even if /api/me fails
+      }
+
+      setIsReady(true);
+    };
+
+    if (window.BX24) {
+      // Inside Bitrix24 iframe — wait for SDK handshake
+      window.BX24.init(() => {
+        const auth = window.BX24?.getAuth();
+        initApp(auth?.access_token ?? undefined);
+      });
+      // Safety fallback: if BX24.init never fires (direct browser access), proceed after 5s
+      const timer = setTimeout(() => initApp(), 5000);
+      return () => clearTimeout(timer);
+    } else {
+      // Not in Bitrix24 — proceed immediately (dev / healthcheck access)
+      initApp();
+    }
   }, []);
 
   return (

@@ -1,13 +1,22 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 // All Bitrix24 calls go through the backend proxy at /api/bx.
-// The Vibecode gateway injects X-Vibe-Authorization, X-Vibe-User-Id,
-// X-Vibe-Portal-Id headers into every request reaching the backend.
+// Auth token is obtained from BX24 JS SDK (when running inside Bitrix24 iframe)
+// and passed via X-BX-Auth header. Falls back to Vibe headers or cookie.
+
+let _bxToken: string | null = null;
+
+export function setBxAuthToken(token: string | null) {
+  _bxToken = token;
+}
 
 async function bxCall(method: string, params: Record<string, unknown> = {}): Promise<any> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (_bxToken) headers['X-BX-Auth'] = _bxToken;
+
   const r = await fetch('/api/bx', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ method, params }),
   });
   if (!r.ok) {
