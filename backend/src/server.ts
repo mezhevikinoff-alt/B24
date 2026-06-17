@@ -121,13 +121,14 @@ app.post('/api/bx', async (req, res) => {
       signal: controller.signal,
     });
     clearTimeout(timer);
-    const data = await response.json();
+    const data = await response.json() as Record<string, unknown>;
     const elapsed = Date.now() - t0;
 
     if (data.error) {
-      console.error(`[${ts()}] [bx] ← ${method}: ERROR ${data.error} — ${data.error_description || ''} (${elapsed}ms)`);
+      console.error(`[${ts()}] [bx] ← ${method}: ERROR ${data.error} — ${data.error_description ?? ''} (${elapsed}ms)`);
     } else {
-      const cnt = Array.isArray(data.result) ? data.result.length : (data.result != null ? 1 : 0);
+      const result = data.result;
+      const cnt = Array.isArray(result) ? result.length : (result != null ? 1 : 0);
       console.log(`[${ts()}] [bx] ← ${method}: OK ${cnt} items, next=${data.next ?? 'none'} (${elapsed}ms)`);
     }
     res.json(data);
