@@ -1,0 +1,55 @@
+name: Diagnose Entity Fields
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check lead fields and sample data
+        env:
+          KEY: vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ1OKn6F7ZsDJ3FMEXqCOC1W4XpJ2_eeb031
+        run: |
+          echo "=== GET /v1/leads/fields ==="
+          curl -s -H "X-Api-Key: $KEY" "https://vibecode.bitrix24.tech/v1/leads/fields" | head -c 4000
+
+          echo ""
+          echo "=== POST /v1/leads/search (sample, limit=1) ==="
+          curl -s -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
+            -X POST "https://vibecode.bitrix24.tech/v1/leads/search" \
+            -d '{"limit":1}' | head -c 3000
+
+          echo ""
+          echo "=== GET /v1/deals/fields ==="
+          curl -s -H "X-Api-Key: $KEY" "https://vibecode.bitrix24.tech/v1/deals/fields" | head -c 4000
+
+          echo ""
+          echo "=== POST /v1/deals/search (sample, limit=1) ==="
+          curl -s -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
+            -X POST "https://vibecode.bitrix24.tech/v1/deals/search" \
+            -d '{"limit":1}' | head -c 3000
+
+          echo ""
+          echo "=== GET /v1/statuses (sample) ==="
+          curl -s -H "X-Api-Key: $KEY" "https://vibecode.bitrix24.tech/v1/statuses?limit=3" | head -c 2000
+
+          echo ""
+          echo "=== GET /v1/deal-categories ==="
+          curl -s -H "X-Api-Key: $KEY" "https://vibecode.bitrix24.tech/v1/deal-categories" | head -c 2000
+
+          echo ""
+          echo "=== GET /v1/workday/status (check timeman API) ==="
+          curl -s -H "X-Api-Key: $KEY" "https://vibecode.bitrix24.tech/v1/workday/status" | head -c 2000
+
+          echo ""
+          echo "=== POST /v1/leads/search with date filter ==="
+          curl -s -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
+            -X POST "https://vibecode.bitrix24.tech/v1/leads/search" \
+            -d '{"filter":{">=createdAt":"2026-06-01T00:00:00.000Z","<createdAt":"2026-07-01T00:00:00.000Z"},"limit":2}' | head -c 3000
+
+          echo ""
+          echo "=== POST /v1/leads/search with BX24-style date filter ==="
+          curl -s -H "X-Api-Key: $KEY" -H "Content-Type: application/json" \
+            -X POST "https://vibecode.bitrix24.tech/v1/leads/search" \
+            -d '{"filter":{">=DATE_CREATE":"2026-06-01","<DATE_CREATE":"2026-07-01"},"limit":2}' | head -c 3000
