@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import fs from 'fs';
 import path from 'path';
 
@@ -9,23 +9,44 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'public')));
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+} catch (e) {
+  console.error(`[init] Failed to create DATA_DIR: ${e}`);
+}
 
 function dataFile(name: string) {
   return path.join(DATA_DIR, name + '.json');
 }
 
 function readJson(file: string): Record<string, unknown> {
-  if (!fs.existsSync(file)) return {};
-  return JSON.parse(fs.readFileSync(file, 'utf-8'));
+  try {
+    if (!fs.existsSync(file)) return {};
+    return JSON.parse(fs.readFileSync(file, 'utf-8'));
+  } catch (e) {
+    console.error(`[readJson] ${file}: ${e}`);
+    return {};
+  }
 }
 
 function writeJson(file: string, data: unknown) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(file, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error(`[writeJson] ${file}: ${e}`);
+    throw e;
+  }
 }
 
 function ts() {
   return new Date().toISOString();
+}
+
+// Strip "Bearer " prefix if present — Bitrix24 REST API expects raw token
+function extractToken(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  if (raw.startsWith('Bearer ') || raw.startsWith('bearer ')) return raw.slice(7);
+  return raw;
 }
 
 const VIBE_APP_KEY = process.env.VIBE_APP_KEY || '';
@@ -43,11 +64,15 @@ app.get('/api/healthcheck', (req, res) => {
     ts: ts(),
     env: {
       VIBE_APP_KEY: VIBE_APP_KEY ? '[SET, length=' + VIBE_APP_KEY.length + ']' : '[MISSING]',
+      BX24_DOMAIN,
       NODE_ENV: process.env.NODE_ENV || 'development',
       PORT: String(PORT),
     },
     vibeHeaders: {
       hasAuthorization: !!req.headers['x-vibe-authorization'],
+      authPrefix: req.headers['x-vibe-authorization']
+        ? String(req.headers['x-vibe-authorization']).slice(0, 12) + '...'
+        : null,
       hasPortalId: !!req.headers['x-vibe-portal-id'],
       hasUserId: !!req.headers['x-vibe-user-id'],
       hasRole: !!req.headers['x-vibe-user-role'],
@@ -88,13 +113,17 @@ app.get('/api/debug', (req, res) => {
     ts: ts(),
     headers: vibeHeaders,
     allHeaders,
-    env: { VIBE_APP_KEY: VIBE_APP_KEY ? '[SET]' : '[MISSING]' },
+    env: {
+      VIBE_APP_KEY: VIBE_APP_KEY ? '[SET]' : '[MISSING]',
+      BX24_DOMAIN,
+    },
   });
 });
 
 // POST /api/bx — proxy Bitrix24 REST API via Vibecode auth headers
 app.post('/api/bx', async (req, res) => {
-  const authorization = req.headers['x-vibe-authorization'] as string | undefined;
+  const rawAuth = req.headers['x-vibe-authorization'] as string | undefined;
+  const authorization = extractToken(rawAuth);
   const portalId = req.headers['x-vibe-portal-id'] as string | undefined;
   const { method, params } = req.body as { method: string; params?: Record<string, unknown> };
 
@@ -104,7 +133,7 @@ app.post('/api/bx', async (req, res) => {
   }
 
   if (!authorization) {
-    console.warn(`[${ts()}] [bx] ${method}: NO AUTH HEADERS (authorization=false, portalId=${portalId || 'null'}) — returning empty result`);
+    console.warn(`[${ts()}] [bx] ${method}: NO AUTH — rawAuth=${rawAuth ? '[present but stripped to empty]' : 'missing'}, portalId=${portalId || 'null'} — returning empty result`);
     res.json({ result: [], next: undefined });
     return;
   }
@@ -116,10 +145,10 @@ app.post('/api/bx', async (req, res) => {
   }, 20000);
 
   const t0 = Date.now();
-  console.log(`[${ts()}] [bx] → ${method} (domain=${BX24_DOMAIN}, portalId=${portalId || 'null'})`);
+  const url = `https://${BX24_DOMAIN}/rest/${method}`;
+  console.log(`[${ts()}] [bx] → ${method} url=${url} tokenLen=${authorization.length}`);
 
   try {
-    const url = `https://${BX24_DOMAIN}/rest/${method}`;
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -127,11 +156,21 @@ app.post('/api/bx', async (req, res) => {
       signal: controller.signal,
     });
     clearTimeout(timer);
-    const data = await response.json() as Record<string, unknown>;
+
+    const text = await response.text();
     const elapsed = Date.now() - t0;
 
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      console.error(`[${ts()}] [bx] ← ${method}: NON-JSON response (HTTP ${response.status}) (${elapsed}ms): ${text.slice(0, 300)}`);
+      res.status(502).json({ error: `Bitrix24 returned non-JSON (HTTP ${response.status})`, raw: text.slice(0, 500) });
+      return;
+    }
+
     if (data.error) {
-      console.error(`[${ts()}] [bx] ← ${method}: ERROR ${data.error} — ${data.error_description ?? ''} (${elapsed}ms)`);
+      console.error(`[${ts()}] [bx] ← ${method}: BX_ERROR ${data.error} — ${data.error_description ?? ''} (${elapsed}ms)`);
     } else {
       const result = data.result;
       const cnt = Array.isArray(result) ? result.length : (result != null ? 1 : 0);
@@ -142,8 +181,11 @@ app.post('/api/bx', async (req, res) => {
     clearTimeout(timer);
     const elapsed = Date.now() - t0;
     const isAbort = err instanceof Error && err.name === 'AbortError';
-    console.error(`[${ts()}] [bx] ← ${method}: ${isAbort ? 'TIMEOUT' : 'EXCEPTION'} — ${String(err)} (${elapsed}ms)`);
-    res.status(500).json({ error: isAbort ? 'Request timed out after 20s' : String(err) });
+    const msg = isAbort ? 'Request timed out after 20s' : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    console.error(`[${ts()}] [bx] ← ${method}: ${isAbort ? 'TIMEOUT' : 'EXCEPTION'} — ${msg} (${elapsed}ms)`);
+    if (stack) console.error(stack);
+    res.status(500).json({ error: msg });
   }
 });
 
@@ -155,11 +197,15 @@ app.get('/api/corrections/:year/:month', (req, res) => {
 });
 
 app.put('/api/corrections/:year/:month', (req, res) => {
-  const key = `${req.params.year}-${req.params.month.padStart(2, '0')}`;
-  const data = readJson(dataFile('corrections'));
-  data[key] = req.body;
-  writeJson(dataFile('corrections'), data);
-  res.json({ ok: true });
+  try {
+    const key = `${req.params.year}-${req.params.month.padStart(2, '0')}`;
+    const data = readJson(dataFile('corrections'));
+    data[key] = req.body;
+    writeJson(dataFile('corrections'), data);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 // Joint leads: { "YYYY-MM": { "leadId": { secondManagerId: string } } }
@@ -170,17 +216,21 @@ app.get('/api/joints/:year/:month', (req, res) => {
 });
 
 app.post('/api/joints/:year/:month', (req, res) => {
-  const key = `${req.params.year}-${req.params.month.padStart(2, '0')}`;
-  const data = readJson(dataFile('joints')) as Record<string, Record<string, unknown>>;
-  if (!data[key]) data[key] = {};
-  const { leadId, secondManagerId } = req.body as { leadId: string; secondManagerId: string | null };
-  if (secondManagerId) {
-    data[key][leadId] = { secondManagerId };
-  } else {
-    delete data[key][leadId];
+  try {
+    const key = `${req.params.year}-${req.params.month.padStart(2, '0')}`;
+    const data = readJson(dataFile('joints')) as Record<string, Record<string, unknown>>;
+    if (!data[key]) data[key] = {};
+    const { leadId, secondManagerId } = req.body as { leadId: string; secondManagerId: string | null };
+    if (secondManagerId) {
+      data[key][leadId] = { secondManagerId };
+    } else {
+      delete data[key][leadId];
+    }
+    writeJson(dataFile('joints'), data);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
   }
-  writeJson(dataFile('joints'), data);
-  res.json({ ok: true });
 });
 
 // Catch-all: serve React app
@@ -191,6 +241,27 @@ app.get('*', (_req, res) => {
   } else {
     res.status(200).send('App not built yet.');
   }
+});
+
+// Global Express error handler — catches any unhandled thrown errors in route handlers
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error ? err.stack : undefined;
+  console.error(`[${ts()}] UNHANDLED ERROR ${req.method} ${req.path}: ${msg}`);
+  if (stack) console.error(stack);
+  if (!res.headersSent) {
+    res.status(500).json({ error: msg });
+  }
+});
+
+// Catch unhandled promise rejections so the server doesn't crash
+process.on('unhandledRejection', (reason) => {
+  console.error(`[${ts()}] UNHANDLED REJECTION: ${reason}`);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error(`[${ts()}] UNCAUGHT EXCEPTION: ${err.message}`);
+  console.error(err.stack);
 });
 
 app.listen(PORT, () => console.log(`[${ts()}] ORK Server ready on port ${PORT}`));

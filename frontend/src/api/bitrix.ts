@@ -10,7 +10,14 @@ async function bxCall(method: string, params: Record<string, unknown> = {}): Pro
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ method, params }),
   });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  if (!r.ok) {
+    let errMsg = `HTTP ${r.status}`;
+    try {
+      const body = await r.json() as { error?: string };
+      if (body.error) errMsg = `HTTP ${r.status}: ${body.error}`;
+    } catch { /* ignore parse error */ }
+    throw new Error(errMsg);
+  }
   return r.json();
 }
 
