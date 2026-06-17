@@ -70,18 +70,22 @@ app.get('/api/me', (req, res) => {
   });
 });
 
-// GET /api/debug — show incoming Vibecode headers (names only, safe for logs)
+// GET /api/debug — show ALL incoming headers (safe for logs)
 app.get('/api/debug', (req, res) => {
   const vibeHeaders: Record<string, string> = {};
+  const allHeaders: Record<string, string> = {};
   for (const [k, v] of Object.entries(req.headers)) {
+    const val = k === 'x-vibe-authorization' ? '[REDACTED, len=' + String(v).length + ']' : String(v);
+    allHeaders[k] = val;
     if (k.startsWith('x-vibe-')) {
-      vibeHeaders[k] = k === 'x-vibe-authorization' ? '[REDACTED, len=' + String(v).length + ']' : String(v);
+      vibeHeaders[k] = val;
     }
   }
-  console.log(`[${ts()}] GET /api/debug — vibeHeaders: ${JSON.stringify(vibeHeaders)}`);
+  console.log(`[${ts()}] GET /api/debug — ALL headers: ${JSON.stringify(allHeaders)}`);
   res.json({
     ts: ts(),
     headers: vibeHeaders,
+    allHeaders,
     env: { VIBE_APP_KEY: VIBE_APP_KEY ? '[SET]' : '[MISSING]' },
   });
 });
