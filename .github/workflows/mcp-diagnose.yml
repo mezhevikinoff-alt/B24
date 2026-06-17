@@ -1,0 +1,94 @@
+name: MCP Diagnose
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mcp-diagnose:
+    runs-on: ubuntu-latest
+    env:
+      VIBE_MCP_KEY: ${{ secrets.VIBE_MCP_KEY || 'vibe_api_uV7pBi4bIuUVnLc6mr2kd062wIzmEM2x_470f5c' }}
+      VIBE_APP_KEY: ${{ secrets.VIBE_APP_KEY || 'vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ1OKn6F7ZsDJ3FMEXqCOC1W4XpJ2_eeb031' }}
+      SERVER_ID:    85110525-94ea-40a1-a611-d9dc9a7dd00d
+      APP_ID:       b6e86834-8b84-42c4-be4b-2bd2b092aa91
+
+    steps:
+      - name: Install Vibecode MCP server
+        run: npm install -g @bitrix24/mcp-vibecode-api@latest 2>/dev/null || npx --yes @bitrix24/mcp-vibecode-api --version
+
+      - name: MCP diagnostics via stdio
+        run: |
+          python3 - <<'PYEOF'
+          import subprocess, json, sys, os
+
+          KEY = os.environ["VIBE_MCP_KEY"]
+          APP_KEY = os.environ["VIBE_APP_KEY"]
+          SERVER_ID = os.environ["SERVER_ID"]
+          APP_ID = os.environ["APP_ID"]
+
+          proc = subprocess.Popen(
+              ["npx", "@bitrix24/mcp-vibecode-api", "--key", KEY],
+              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+          )
+
+          def rpc(method, params, id_=None):
+              msg = {"jsonrpc":"2.0","method":method,"params":params}
+              if id_ is not None:
+                  msg["id"] = id_
+              proc.stdin.write(json.dumps(msg) + "\n")
+              proc.stdin.flush()
+              if id_ is not None:
+                  return json.loads(proc.stdout.readline())
+
+          rpc("initialize", {
+              "protocolVersion":"2024-11-05",
+              "capabilities":{},
+              "clientInfo":{"name":"mcp-diag","version":"1.0"}
+          }, 1)
+          rpc("notifications/initialized", {})
+
+          def tool(name, args, rid):
+              resp = rpc("tools/call", {"name": name, "arguments": args}, rid)
+              content = resp.get("result", {}).get("content", [])
+              for c in content:
+                  if c.get("type") == "text":
+                      try:
+                          return json.dumps(json.loads(c["text"]), indent=2, ensure_ascii=False)
+                      except:
+                          return c["text"]
+              return json.dumps(resp, ensure_ascii=False)
+
+          def section(title, result):
+              print(f"\n{'='*60}")
+              print(f"  {title}")
+              print('='*60)
+              print(result)
+
+          section("1. Identity (get_me)", tool("get_me", {}, 10))
+
+          section("2. App info (get_app)", tool("get_app", {"id": APP_ID}, 11))
+
+          section("3. Server info (manage_server get)", tool("manage_server", {
+              "action": "get", "serverId": SERVER_ID
+          }, 12))
+
+          section("4. Server logs (manage_server_deploy logs)", tool("manage_server_deploy", {
+              "action": "logs", "serverId": SERVER_ID
+          }, 13))
+
+          section("5. Black Hole access list (manage_server_access list)", tool("manage_server_access", {
+              "action": "list", "serverId": SERVER_ID
+          }, 14))
+
+          section("6. App placements (manage_placements list)", tool("manage_placements", {
+              "action": "list", "appKey": APP_KEY
+          }, 15))
+
+          section("7. Portal users sample (list_entities user)", tool("list_entities", {
+              "entity": "user",
+              "appKey": APP_KEY,
+              "limit": 3
+          }, 16))
+
+          proc.terminate()
+          PYEOF
