@@ -36,6 +36,7 @@ export function ScheduleModule({ year, month }: Props) {
   const [corrections, setCorrections] = useState<Record<string, Record<string, number>>>({});
   const [loading, setLoading] = useState(true);
   const [loadStep, setLoadStep] = useState('');
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [editCell, setEditCell] = useState<{ userId: string; dateStr: string } | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -77,6 +78,7 @@ export function ScheduleModule({ year, month }: Props) {
   useEffect(() => {
     setLoading(true);
     setError(null);
+    setProgress(0);
     const dateFrom = `${year}-${String(month).padStart(2, '0')}-01T00:00:00`;
     const nextMonth = month === 12 ? 1 : month + 1;
     const nextYear = month === 12 ? year + 1 : year;
@@ -87,16 +89,20 @@ export function ScheduleModule({ year, month }: Props) {
         let users: BX24User[] = allUsers;
         if (users.length === 0) {
           setLoadStep('Загрузка сотрудников...');
+          setProgress(10);
           users = await getUserList();
           setAllUsers(users);
         }
+        setProgress(25);
         const userIds = users.map((u) => u.ID);
         setLoadStep('Загрузка расписания...');
+        setProgress(30);
         const [timeData, corr] = await Promise.all([
           getTimemanReport(userIds, dateFrom, dateTo).catch(() => null),
           getCorrections(year, month),
         ]);
         setCorrections(corr);
+        setProgress(75);
         setLoadStep('Расчёт данных...');
 
         // Expected: { USERS: { "userId": { REPORT: { "YYYY-MM-DD": { DURATION: seconds } } } } }
@@ -115,6 +121,7 @@ export function ScheduleModule({ year, month }: Props) {
         }
 
         setRows(buildRows(users, rawHours, corr));
+        setProgress(100);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -168,8 +175,8 @@ export function ScheduleModule({ year, month }: Props) {
     return 'bg-white text-gray-400';
   };
 
-  if (loading) return <LoadingView step={loadStep} />;
-  if (error) return <ErrorView message={error} onRetry={() => setError(null)} />;
+  if (loading) return <LoadingView step={loadStep} progress={progress} />;
+  if (error) return <ErrorView message={error} onRetry={() => { setError(null); setLoading(true); }} />;
 
   return (
     <div className="p-4">
@@ -312,11 +319,21 @@ export function ScheduleModule({ year, month }: Props) {
   );
 }
 
-function LoadingView({ step }: { step: string }) {
+function LoadingView({ step, progress }: { step: string; progress: number }) {
   return (
-    <div className="flex flex-col items-center justify-center h-48 gap-3">
-      <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-      <div className="text-gray-500 text-sm">{step || 'Загрузка...'}</div>
+    <div className="flex flex-col items-center justify-center h-48 gap-4 px-8">
+      <div className="w-full max-w-xs">
+        <div className="flex justify-between text-xs text-gray-500 mb-1">
+          <span>{step || 'Загрузка...'}</span>
+          <span>{progress}%</span>
+        </div>
+        <div className="w-full bg-gray-200 rounded-full h-2">
+          <div
+            className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
     </div>
   );
 }

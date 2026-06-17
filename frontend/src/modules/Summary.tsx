@@ -20,6 +20,7 @@ export function SummaryModule({ year, month }: Props) {
   const [rows, setRows] = useState<ManagerMonth[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadStep, setLoadStep] = useState('');
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [deptConvRate, setDeptConvRate] = useState(0);
 
@@ -29,17 +30,21 @@ export function SummaryModule({ year, month }: Props) {
   useEffect(() => {
     setLoading(true);
     setError(null);
+    setProgress(0);
     (async () => {
       try {
         let users: BX24User[] = allUsers;
         if (users.length === 0) {
           setLoadStep('Загрузка сотрудников...');
+          setProgress(5);
           users = await getUserList();
           setAllUsers(users);
         }
         const userIds = users.map((u) => u.ID);
+        setProgress(20);
 
         setLoadStep('Загрузка данных (лиды, расписание, сделки)...');
+        setProgress(25);
         const [allLeads, timeData, corrections, joints, categories] = await Promise.all([
           getLeadsForMonth(from, to),
           getTimemanReport(userIds, from.slice(0, 10), to.slice(0, 10)).catch(() => null),
@@ -54,6 +59,7 @@ export function SummaryModule({ year, month }: Props) {
           if (c.NAME.toLowerCase().includes('банкрот')) bankIds.add(c.ID);
         });
 
+        setProgress(55);
         setLoadStep('Фильтрация статусов...');
         const excludedIds = await resolveExcludedStatusIds();
         const filtered = allLeads.filter((l: any) => !excludedIds.has(l.STATUS_ID));
@@ -62,12 +68,14 @@ export function SummaryModule({ year, month }: Props) {
         // Dept-level conversion rate
         const deptRate = filtered.length > 0 ? converted.length / filtered.length : 0;
         setDeptConvRate(deptRate);
+        setProgress(70);
 
         setLoadStep('Загрузка сделок...');
         const convertedLeadIds = converted.map((l: any) => l.ID);
         const deals = await getDealsByLeadIds(convertedLeadIds).catch(() => []);
         const dealByLead: Record<string, { ID: string; CATEGORY_ID: string }> = {};
         deals.forEach((d: any) => { if (d.LEAD_ID) dealByLead[d.LEAD_ID] = d; });
+        setProgress(82);
 
         // Parse timeman
         const rawHours: Record<string, Record<string, number>> = {};
@@ -85,6 +93,7 @@ export function SummaryModule({ year, month }: Props) {
         }
 
         setLoadStep('Расчёт мотивации...');
+        setProgress(85);
         // Build per-manager stats
         const managerRows: ManagerMonth[] = users.map((user) => {
           // Hours
@@ -182,6 +191,7 @@ export function SummaryModule({ year, month }: Props) {
         });
 
         setRows(managerRows);
+        setProgress(100);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -278,7 +288,7 @@ export function SummaryModule({ year, month }: Props) {
     XLSX.writeFile(wb, `ORK_Отчёт_${formatMonthRu(year, month).replace(' ', '_')}.xlsx`);
   };
 
-  if (loading) return <LoadingView step={loadStep} />;
+  if (loading) return <LoadingView step={loadStep} progress={progress} />;
   if (error) return <ErrorView message={error} onRetry={() => { setError(null); setLoading(true); }} />;
 
   const pctFast = (r: ManagerMonth) =>
@@ -418,11 +428,21 @@ export function SummaryModule({ year, month }: Props) {
   );
 }
 
-function LoadingView({ step }: { step: string }) {
+function LoadingView({ step, progress }: { step: string; progress: number }) {
   return (
-    <div className="flex flex-col items-center justify-center h-48 gap-3">
-      <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-      <div className="text-gray-500 text-sm">{step || 'Загрузка...'}</div>
+    <div className="flex flex-col items-center justify-center h-48 gap-4 px-8">
+      <div className="w-full max-w-xs">
+        <div className="flex justify-between text-xs text-gray-500 mb-1">
+          <span>{step || 'Загрузка...'}</span>
+          <span>{progress}%</span>
+        </div>
+        <div className="w-full bg-gray-200 rounded-full h-2">
+          <div
+            className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
     </div>
   );
 }

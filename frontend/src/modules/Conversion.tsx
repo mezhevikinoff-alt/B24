@@ -21,6 +21,7 @@ export function ConversionModule({ year, month }: Props) {
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadStep, setLoadStep] = useState('');
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [editingJoint, setEditingJoint] = useState<string | null>(null);
   const [jointValue, setJointValue] = useState('');
@@ -32,27 +33,33 @@ export function ConversionModule({ year, month }: Props) {
   useEffect(() => {
     setLoading(true);
     setError(null);
+    setProgress(0);
     (async () => {
       try {
         let users: BX24User[] = allUsers;
         if (users.length === 0) {
           setLoadStep('Загрузка сотрудников...');
+          setProgress(5);
           users = await getUserList();
           setAllUsers(users);
         }
         const uMap: Record<string, BX24User> = {};
         users.forEach((u) => { uMap[u.ID] = u; });
         setUsersMap(uMap);
+        setProgress(15);
 
         setLoadStep('Загрузка категорий сделок...');
+        setProgress(20);
         const categories = await getDealCategories().catch(() => []);
         const bankIds = new Set<string>();
         categories.forEach((c: { ID: string; NAME: string }) => {
           if (c.NAME.toLowerCase().includes('банкрот')) bankIds.add(c.ID);
         });
         setBankruptcyCatIds(bankIds);
+        setProgress(30);
 
         setLoadStep('Загрузка лидов...');
+        setProgress(35);
         const [allLeads, joints] = await Promise.all([
           getLeadsForMonth(from, to),
           getJoints(year, month),
@@ -60,6 +67,7 @@ export function ConversionModule({ year, month }: Props) {
 
         const total = allLeads.length;
         setTotalCount(total);
+        setProgress(55);
 
         setLoadStep('Фильтрация статусов...');
         const excludedIds = await resolveExcludedStatusIds();
@@ -67,18 +75,21 @@ export function ConversionModule({ year, month }: Props) {
           (l: Lead) => !excludedIds.has(l.STATUS_ID),
         );
         setExcludedCount(total - filteredLeads.length);
+        setProgress(65);
 
         const convertedLeads: Lead[] = filteredLeads.filter(
           (l: Lead) => l.DATE_CONVERT && l.DATE_CONVERT.length > 0,
         );
 
         setLoadStep('Загрузка сделок...');
+        setProgress(70);
         const leadIds = convertedLeads.map((l) => l.ID);
         const deals = await getDealsByLeadIds(leadIds).catch(() => []);
         const dealByLead: Record<string, { ID: string; CATEGORY_ID: string }> = {};
         deals.forEach((d: { ID: string; LEAD_ID?: string; CATEGORY_ID: string }) => {
           if (d.LEAD_ID) dealByLead[d.LEAD_ID] = d;
         });
+        setProgress(85);
 
         setLoadStep('Расчёт конверсии...');
         const built: ConversionEntry[] = convertedLeads.map((lead) => {
@@ -106,6 +117,7 @@ export function ConversionModule({ year, month }: Props) {
         });
 
         setEntries(built);
+        setProgress(100);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -142,7 +154,7 @@ export function ConversionModule({ year, month }: Props) {
     return `${u.LAST_NAME} ${u.NAME}`;
   };
 
-  if (loading) return <LoadingView step={loadStep} />;
+  if (loading) return <LoadingView step={loadStep} progress={progress} />;
   if (error) return <ErrorView message={error} onRetry={() => { setError(null); setLoading(true); }} />;
 
   return (
@@ -296,11 +308,21 @@ export function ConversionModule({ year, month }: Props) {
   );
 }
 
-function LoadingView({ step }: { step: string }) {
+function LoadingView({ step, progress }: { step: string; progress: number }) {
   return (
-    <div className="flex flex-col items-center justify-center h-48 gap-3">
-      <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
-      <div className="text-gray-500 text-sm">{step || 'Загрузка...'}</div>
+    <div className="flex flex-col items-center justify-center h-48 gap-4 px-8">
+      <div className="w-full max-w-xs">
+        <div className="flex justify-between text-xs text-gray-500 mb-1">
+          <span>{step || 'Загрузка...'}</span>
+          <span>{progress}%</span>
+        </div>
+        <div className="w-full bg-gray-200 rounded-full h-2">
+          <div
+            className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
     </div>
   );
 }

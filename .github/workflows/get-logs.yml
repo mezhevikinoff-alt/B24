@@ -13,56 +13,80 @@ jobs:
       SERVER_ID:      85110525-94ea-40a1-a611-d9dc9a7dd00d
       APP_ID:         b6e86834-8b84-42c4-be4b-2bd2b092aa91
       BASE:           https://vibecode.bitrix24.tech/v1
+      APP_URL:        https://app-214265deb83b.vibecode.bitrix24.tech
 
     steps:
-      - name: Server logs (last 50 lines)
-        run: |
-          echo "=== GET /v1/infra/servers/$SERVER_ID/logs ==="
-          curl -s \
-            -H "X-Api-Key: $VIBE_INFRA_KEY" \
-            "$BASE/infra/servers/$SERVER_ID/logs" \
-            | jq -r '.data.logs[]?' 2>/dev/null || echo "Could not fetch logs"
-
-      - name: Server status
+      - name: Server status + env (infra API)
         run: |
           echo "=== GET /v1/infra/servers/$SERVER_ID ==="
           curl -s \
             -H "X-Api-Key: $VIBE_INFRA_KEY" \
             "$BASE/infra/servers/$SERVER_ID" \
-            | jq '{status: .data.status, appUrl: .data.appUrl, blackholeStatus: .data.blackholeStatus, runtimeStatus: .data.runtimeStatus}' 2>/dev/null
+            | jq '{
+                status: .data.status,
+                deployedAt: .data.deployedAt,
+                appUrl: .data.appUrl,
+                runtimeStatus: .data.runtimeStatus,
+                env: .data.env
+              }' 2>/dev/null || echo "Could not fetch server info"
 
-      - name: App registration — GET /v1/me (vibe_app key)
+      - name: Server logs (last 100 lines)
         run: |
-          echo "=== GET /v1/me with VIBE_APP_KEY (X-Api-Key) ==="
-          curl -s \
-            -H "X-Api-Key: $VIBE_APP_KEY" \
-            "$BASE/me" | jq '{app: .data.app, placements: .data.placements, handlerUrl: .data.handlerUrl, appUrl: .data.appUrl}' 2>/dev/null || \
-          curl -s \
-            -H "X-Api-Key: $VIBE_APP_KEY" \
-            "$BASE/me"
+          echo "=== GET /v1/infra/servers/$SERVER_ID/logs ==="
+          RAW=$(curl -s \
+            -H "X-Api-Key: $VIBE_INFRA_KEY" \
+            "$BASE/infra/servers/$SERVER_ID/logs")
+          echo "$RAW" | jq -r '.data.logs[]?' 2>/dev/null \
+            || echo "$RAW" | jq -r '.data // .logs // .' 2>/dev/null \
+            || echo "$RAW"
+
+      - name: App /api/debug (Vibecode gateway headers check)
+        run: |
+          echo "=== GET $APP_URL/api/debug ==="
+          curl -s --max-time 15 \
+            "$APP_URL/api/debug" | jq . 2>/dev/null || echo "Could not reach /api/debug"
 
           echo ""
-          echo "=== GET /v1/apps (X-Api-Key) ==="
-          curl -s \
-            -H "X-Api-Key: ${VIBE_APP_KEY:-$VIBE_KEY}" \
-            "$BASE/apps" | jq '.data[] | {id, title, appUrl, handlerUrl, placements}' 2>/dev/null || \
-          curl -s \
-            -H "X-Api-Key: ${VIBE_APP_KEY:-$VIBE_KEY}" \
-            "$BASE/apps"
+          echo "=== GET $APP_URL/api/me ==="
+          curl -s --max-time 15 \
+            "$APP_URL/api/me" | jq . 2>/dev/null || echo "Could not reach /api/me"
 
-          echo ""
+      - name: App registration via Vibecode API
+        run: |
           echo "=== GET /v1/apps/$APP_ID ==="
           curl -s \
             -H "X-Api-Key: ${VIBE_APP_KEY:-$VIBE_KEY}" \
-            "$BASE/apps/$APP_ID" | jq '{id: .data.id, title: .data.title, appUrl: .data.appUrl, handlerUrl: .data.handlerUrl, placements: .data.placements, domain: .data.domain}' 2>/dev/null || \
-          curl -s \
-            -H "X-Api-Key: ${VIBE_APP_KEY:-$VIBE_KEY}" \
-            "$BASE/apps/$APP_ID"
+            "$BASE/apps/$APP_ID" \
+            | jq '{
+                id: .data.id,
+                title: .data.title,
+                appUrl: .data.appUrl,
+                handlerUrl: .data.handlerUrl,
+                placements: .data.placements,
+                domain: .data.domain
+              }' 2>/dev/null || echo "Could not fetch app info"
 
-      - name: Check if app reachable at appUrl
+      - name: Check app reachable + healthcheck
         run: |
-          APP_URL="https://app-214265deb83b.vibecode.bitrix24.tech"
-          echo "=== curl $APP_URL ==="
+          echo "=== GET $APP_URL ==="
           CODE=$(curl -s -o /tmp/app_root.txt -w "%{http_code}" --max-time 10 "$APP_URL" || echo "000")
           echo "HTTP $CODE"
-          head -5 /tmp/app_root.txt 2>/dev/null || true
+          head -3 /tmp/app_root.txt 2>/dev/null || true
+
+          echo ""
+          echo "=== GET $APP_URL/api/healthcheck ==="
+          curl -s --max-time 10 "$APP_URL/api/healthcheck" | jq . 2>/dev/null || echo "No healthcheck endpoint"
+
+      - name: POST test to /api/bx (without auth — should return empty)
+        run: |
+          echo "=== POST $APP_URL/api/bx (user.get, no auth) ==="
+          curl -s --max-time 15 \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d '{"method":"user.get","params":{"FILTER":{"ACTIVE":true}}}' \
+            "$APP_URL/api/bx" | jq '{
+              has_result: (.result != null),
+              result_count: (if .result | type == "array" then .result | length else 0 end),
+              error: .error,
+              next: .next
+            }' 2>/dev/null || echo "Could not reach /api/bx"

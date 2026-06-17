@@ -24,16 +24,48 @@ function writeJson(file: string, data: unknown) {
   fs.writeFileSync(file, JSON.stringify(data, null, 2));
 }
 
+function ts() {
+  return new Date().toISOString();
+}
+
 const VIBE_APP_KEY = process.env.VIBE_APP_KEY || '';
+
+console.log(`[${ts()}] ORK Server starting on port ${PORT}`);
+console.log(`[${ts()}] VIBE_APP_KEY: ${VIBE_APP_KEY ? '[SET, length=' + VIBE_APP_KEY.length + ']' : '[MISSING]'}`);
+console.log(`[${ts()}] NODE_ENV: ${process.env.NODE_ENV || 'development'}`);
+
+// GET /api/healthcheck
+app.get('/api/healthcheck', (req, res) => {
+  res.json({
+    ok: true,
+    ts: ts(),
+    env: {
+      VIBE_APP_KEY: VIBE_APP_KEY ? '[SET, length=' + VIBE_APP_KEY.length + ']' : '[MISSING]',
+      NODE_ENV: process.env.NODE_ENV || 'development',
+      PORT: String(PORT),
+    },
+    vibeHeaders: {
+      hasAuthorization: !!req.headers['x-vibe-authorization'],
+      hasPortalId: !!req.headers['x-vibe-portal-id'],
+      hasUserId: !!req.headers['x-vibe-user-id'],
+      hasRole: !!req.headers['x-vibe-user-role'],
+    },
+  });
+});
 
 // GET /api/me — user info injected by Vibecode gateway
 app.get('/api/me', (req, res) => {
   const encodedName = req.headers['x-vibe-user-name-encoded'] as string | undefined;
   const role = req.headers['x-vibe-user-role'] as string | undefined;
+  const userId = req.headers['x-vibe-user-id'] as string | undefined;
+  const portalId = req.headers['x-vibe-portal-id'] as string | undefined;
+
+  console.log(`[${ts()}] GET /api/me — userId=${userId || 'null'}, portalId=${portalId || 'null'}, role=${role || 'null'}, hasAuth=${!!req.headers['x-vibe-authorization']}`);
+
   res.json({
-    userId: req.headers['x-vibe-user-id'] || null,
+    userId: userId || null,
     userName: encodedName ? decodeURIComponent(encodedName) : null,
-    portalId: req.headers['x-vibe-portal-id'] || null,
+    portalId: portalId || null,
     isAdmin: role === 'ADMIN',
   });
 });
@@ -43,10 +75,15 @@ app.get('/api/debug', (req, res) => {
   const vibeHeaders: Record<string, string> = {};
   for (const [k, v] of Object.entries(req.headers)) {
     if (k.startsWith('x-vibe-')) {
-      vibeHeaders[k] = k === 'x-vibe-authorization' ? '[REDACTED]' : String(v);
+      vibeHeaders[k] = k === 'x-vibe-authorization' ? '[REDACTED, len=' + String(v).length + ']' : String(v);
     }
   }
-  res.json({ headers: vibeHeaders, env: { VIBE_APP_KEY: VIBE_APP_KEY ? '[SET]' : '[MISSING]' } });
+  console.log(`[${ts()}] GET /api/debug — vibeHeaders: ${JSON.stringify(vibeHeaders)}`);
+  res.json({
+    ts: ts(),
+    headers: vibeHeaders,
+    env: { VIBE_APP_KEY: VIBE_APP_KEY ? '[SET]' : '[MISSING]' },
+  });
 });
 
 // POST /api/bx — proxy Bitrix24 REST API via Vibecode auth headers
@@ -61,13 +98,20 @@ app.post('/api/bx', async (req, res) => {
   }
 
   if (!authorization || !portalId) {
-    console.warn(`[bx] ${method}: no auth headers (authorization=${!!authorization}, portalId=${portalId})`);
+    console.warn(`[${ts()}] [bx] ${method}: NO AUTH HEADERS (authorization=${!!authorization}, portalId=${portalId || 'null'}) — returning empty result`);
     res.json({ result: [], next: undefined });
     return;
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20000);
+  const timer = setTimeout(() => {
+    console.error(`[${ts()}] [bx] ${method}: TIMEOUT after 20s`);
+    controller.abort();
+  }, 20000);
+
+  const t0 = Date.now();
+  console.log(`[${ts()}] [bx] → ${method} (portal=${portalId})`);
+
   try {
     const url = `https://${portalId}/rest/${method}`;
     const response = await fetch(url, {
@@ -78,13 +122,21 @@ app.post('/api/bx', async (req, res) => {
     });
     clearTimeout(timer);
     const data = await response.json();
-    if (data.error) console.error(`[bx] ${method} → error: ${data.error} ${data.error_description || ''}`);
-    else console.log(`[bx] ${method} → HTTP ${response.status}, result count: ${Array.isArray(data.result) ? data.result.length : '?'}`);
+    const elapsed = Date.now() - t0;
+
+    if (data.error) {
+      console.error(`[${ts()}] [bx] ← ${method}: ERROR ${data.error} — ${data.error_description || ''} (${elapsed}ms)`);
+    } else {
+      const cnt = Array.isArray(data.result) ? data.result.length : (data.result != null ? 1 : 0);
+      console.log(`[${ts()}] [bx] ← ${method}: OK ${cnt} items, next=${data.next ?? 'none'} (${elapsed}ms)`);
+    }
     res.json(data);
-  } catch (err) {
+  } catch (err: unknown) {
     clearTimeout(timer);
-    console.error(`[bx] ${method} → exception:`, err);
-    res.status(500).json({ error: String(err) });
+    const elapsed = Date.now() - t0;
+    const isAbort = err instanceof Error && err.name === 'AbortError';
+    console.error(`[${ts()}] [bx] ← ${method}: ${isAbort ? 'TIMEOUT' : 'EXCEPTION'} — ${String(err)} (${elapsed}ms)`);
+    res.status(500).json({ error: isAbort ? 'Request timed out after 20s' : String(err) });
   }
 });
 
@@ -134,4 +186,4 @@ app.get('*', (_req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`ORK Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`[${ts()}] ORK Server ready on port ${PORT}`));
