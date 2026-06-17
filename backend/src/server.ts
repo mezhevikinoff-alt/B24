@@ -177,13 +177,14 @@ app.get('/api/debug', (req, res) => {
 //                2) bx_auth cookie (Bitrix24 handler POST flow)
 app.post('/api/bx', async (req, res) => {
   const rawVibeAuth = req.headers['x-vibe-authorization'] as string | undefined;
-  const vibeAuth = extractToken(rawVibeAuth);
   const bxAuth = (req.headers['x-bx-auth'] as string | undefined)?.trim() || undefined;
 
   const cookies = getCookies(req);
   const cookieAuth = cookies[AUTH_COOKIE] || undefined;
 
-  const authorization = vibeAuth || bxAuth || cookieAuth;
+  // x-vibe-authorization is a Vibecode internal token, NOT a valid Bitrix24 OAuth token.
+  // Only use it for logging; never pass it to Bitrix24 REST API.
+  const authorization = bxAuth || cookieAuth;
 
   const portalId = req.headers['x-vibe-portal-id'] as string | undefined;
   const { method, params } = req.body as { method: string; params?: Record<string, unknown> };
@@ -194,12 +195,12 @@ app.post('/api/bx', async (req, res) => {
   }
 
   if (!authorization) {
-    console.warn(`[${ts()}] [bx] ${method}: NO AUTH — vibeHeader=${!!rawVibeAuth}, bxSdk=${!!bxAuth}, cookie=${!!cookieAuth}, portalId=${portalId || 'null'} — returning empty result`);
+    console.warn(`[${ts()}] [bx] ${method}: NO AUTH — vibeHeader=${!!rawVibeAuth}(skipped), bxSdk=${!!bxAuth}, cookie=${!!cookieAuth}, portalId=${portalId || 'null'} — returning empty result`);
     res.json({ result: [], next: undefined });
     return;
   }
 
-  const authSource = vibeAuth ? 'vibe-header' : bxAuth ? 'bx24-sdk' : 'cookie';
+  const authSource = bxAuth ? 'bx24-sdk' : 'cookie';
   const controller = new AbortController();
   const timer = setTimeout(() => {
     console.error(`[${ts()}] [bx] ${method}: TIMEOUT after 20s`);
