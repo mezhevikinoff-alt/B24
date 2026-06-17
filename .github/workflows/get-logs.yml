@@ -53,9 +53,9 @@ jobs:
 
       - name: App registration via Vibecode API
         run: |
-          echo "=== GET /v1/apps/$APP_ID ==="
+          echo "=== GET /v1/apps/$APP_ID (VIBE_INFRA_KEY) ==="
           curl -s \
-            -H "X-Api-Key: ${VIBE_APP_KEY:-$VIBE_KEY}" \
+            -H "X-Api-Key: $VIBE_INFRA_KEY" \
             "$BASE/apps/$APP_ID" \
             | jq '{
                 id: .data.id,
@@ -63,7 +63,8 @@ jobs:
                 appUrl: .data.appUrl,
                 handlerUrl: .data.handlerUrl,
                 placements: .data.placements,
-                domain: .data.domain
+                bitrixClientId: .data.bitrixClientId,
+                portalId: .data.portalId
               }' 2>/dev/null || echo "Could not fetch app info"
 
       - name: Check app reachable + healthcheck
