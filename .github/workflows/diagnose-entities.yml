@@ -9,7 +9,7 @@ jobs:
     steps:
       - name: Check lead fields and sample data
         env:
-          KEY: vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ1OKn6F7ZsDJ3FMEXqCOC1W4XpJ2_eeb031
+          KEY: vibe_api_uV7pBi4bIuUVnLc6mr2kd062wIzmEM2x_470f5c
         run: |
           echo "=== GET /v1/leads/fields ==="
           curl -s -H "X-Api-Key: $KEY" "https://vibecode.bitrix24.tech/v1/leads/fields" | head -c 4000
