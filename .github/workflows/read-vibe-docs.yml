@@ -7,40 +7,17 @@ jobs:
   read-docs:
     runs-on: ubuntu-latest
     steps:
-      - name: GET /v1/me
+      - name: GET /v1/me with vibe_app_ key
         env:
-          KEY_MCP: vibe_api_uV7pBi4bIuUVnLc6mr2kd062wIzmEM2x_470f5c
-          KEY_INFRA: vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9
-          KEY_APP: vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ10Kn6F7ZsDJ3FMEXqC0C1W4XpJ2_eeb031
-          KEY_APP_O: vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ1OKn6F7ZsDJ3FMEXqCOC1W4XpJ2_eeb031
+          KEY_APP: vibe_app_local_6a315de3997341_60084050_huiUWiW2TaXFrjEaYDHJbVJ1OKn6F7ZsDJ3FMEXqCOC1W4XpJ2_eeb031
         run: |
-          echo "=== /v1/me with MCP key (vibe_api_uV7...) ==="
-          curl -s -H "X-Api-Key: $KEY_MCP" https://vibecode.bitrix24.tech/v1/me
-
-          echo ""
-          echo "=== /v1/me with INFRA key (vibe_api_wXJ...) ==="
-          curl -s -H "X-Api-Key: $KEY_INFRA" https://vibecode.bitrix24.tech/v1/me
-
-          echo ""
-          echo "=== /v1/me with APP key (zeros) ==="
+          echo "=== GET /v1/me with vibe_app_ key (full response) ==="
           curl -s -H "X-Api-Key: $KEY_APP" https://vibecode.bitrix24.tech/v1/me
 
           echo ""
-          echo "=== /v1/me with APP key (capital O) ==="
-          curl -s -H "X-Api-Key: $KEY_APP_O" https://vibecode.bitrix24.tech/v1/me
+          echo "=== GET /v1/placements (available placements) ==="
+          curl -s -H "X-Api-Key: $KEY_APP" https://vibecode.bitrix24.tech/v1/placements
 
           echo ""
-          echo "=== /v1/apps (MCP key) ==="
-          curl -s -H "X-Api-Key: $KEY_MCP" https://vibecode.bitrix24.tech/v1/apps
-
-          echo ""
-          echo "=== /v1/infra/servers (MCP key) ==="
-          curl -s -H "X-Api-Key: $KEY_MCP" https://vibecode.bitrix24.tech/v1/infra/servers
-
-          echo ""
-          echo "=== /v1/infra/servers/85110525 (MCP key) ==="
-          curl -s -H "X-Api-Key: $KEY_MCP" https://vibecode.bitrix24.tech/v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d
-
-          echo ""
-          echo "=== Deploy endpoint (MCP key) - GET ==="
-          curl -s -H "X-Api-Key: $KEY_MCP" https://vibecode.bitrix24.tech/v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d/deploy
+          echo "=== GET /v1/guide (API guide) ==="
+          curl -s -H "X-Api-Key: $KEY_APP" https://vibecode.bitrix24.tech/v1/guide | head -c 8000
