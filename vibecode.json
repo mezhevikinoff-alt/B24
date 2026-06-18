@@ -5,8 +5,10 @@
   "runtime": "nodejs20",
   "entrypoint": "dist/server.js",
   "scopes": ["crm", "timeman", "user", "placement"],
+  "server": "3a540f54-003c-407e-8e20-744142ee12be",
+  "appUrl": "https://app-2afbe79d4d2e.vibecode.bitrix24.tech",
   "env": {
-    "PORT": "3001",
+    "PORT": "3000",
     "NODE_ENV": "production"
   }
 }

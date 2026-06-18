@@ -59,7 +59,7 @@ function writeJson(file: string, data: unknown) {
 
 // ─── Вайбкод API: единая функция запроса ──────────────────────────────────────
 // Rule 1: всегда X-Api-Key: VIBE_APP_KEY
-// Rule 2: всегда Authorization: Bearer <x-vibe-authorization>
+// Rule 2: если есть bearerToken — Authorization: Bearer <token>
 
 interface VibeResponse {
   success: boolean;
@@ -69,25 +69,22 @@ interface VibeResponse {
 }
 
 // ─── Rate limiter: 200мс между запросами = максимум 5 req/s ──────────────────
-// Все запросы к Вайбкод API проходят через очередь, исключая 429
 
 let _rateLimitLock: Promise<void> = Promise.resolve();
 const RATE_INTERVAL_MS = 200;
 
 function scheduleVibecodeRequest<T>(fn: () => Promise<T>): Promise<T> {
   const scheduled = _rateLimitLock.then(async () => {
-    // 200мс минимальный интервал после предыдущего запроса
     await new Promise<void>(r => setTimeout(r, RATE_INTERVAL_MS));
     return fn();
   });
-  // Цепочка: следующий запрос ждёт завершения текущего (успех или ошибка)
   _rateLimitLock = scheduled.then(() => {}, () => {});
   return scheduled;
 }
 
 async function callVibecode(
   url: string,
-  opts: { method?: string; body?: unknown },
+  opts: { method?: string; body?: unknown; bearerToken?: string },
   attempt = 1,
 ): Promise<VibeResponse> {
   return scheduleVibecodeRequest(() => callVibecodeDirect(url, opts, attempt));
@@ -95,19 +92,29 @@ async function callVibecode(
 
 async function callVibecodeDirect(
   url: string,
-  opts: { method?: string; body?: unknown },
+  opts: { method?: string; body?: unknown; bearerToken?: string },
   attempt: number,
 ): Promise<VibeResponse> {
   const method = opts.method || 'GET';
   log('vibecode', `→ [попытка ${attempt}/3] ${method} ${url}${opts.body ? ' body=' + JSON.stringify(opts.body).slice(0, 200) : ''}`);
 
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Api-Key': VIBE_APP_KEY,
+  };
+
+  // Rule 2: пробрасываем bearer-токен пользователя как Authorization
+  if (opts.bearerToken) {
+    const bearer = opts.bearerToken.startsWith('Bearer ')
+      ? opts.bearerToken
+      : `Bearer ${opts.bearerToken}`;
+    headers['Authorization'] = bearer;
+  }
+
   const t0 = Date.now();
   const response = await fetch(url, {
     method,
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Api-Key': VIBE_APP_KEY, // единственный нужный заголовок для Вайбкод API
-    },
+    headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
 
@@ -115,7 +122,6 @@ async function callVibecodeDirect(
   const elapsed = Date.now() - t0;
   log('vibecode', `← HTTP ${response.status} за ${elapsed}мс: ${text.slice(0, 300)}`);
 
-  // Обработка 429: ждём 1с и повторяем (максимум 3 попытки)
   if (response.status === 429) {
     if (attempt < 3) {
       log('vibecode', `429 Too Many Requests — ждём 1с и повторяем (попытка ${attempt + 1}/3)`);
@@ -143,7 +149,7 @@ async function callVibecodeDirect(
   return parsed;
 }
 
-// ─── Batch API: несколько запросов за один HTTP-вызов ────────────────────────
+// ─── Batch API ────────────────────────────────────────────────────────────────
 
 interface BatchRequest {
   method: string;
@@ -159,16 +165,23 @@ interface BatchVibeResponse {
 
 async function callVibeBatch(
   requests: Record<string, BatchRequest>,
+  bearerToken?: string,
 ): Promise<Record<string, VibeResponse>> {
   log('batch', `→ batch из ${Object.keys(requests).length} запросов: ${Object.keys(requests).join(', ')}`);
   const t0 = Date.now();
 
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Api-Key': VIBE_APP_KEY,
+  };
+  if (bearerToken) {
+    const bearer = bearerToken.startsWith('Bearer ') ? bearerToken : `Bearer ${bearerToken}`;
+    headers['Authorization'] = bearer;
+  }
+
   const response = await fetch(`${VIBE_API}/batch`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Api-Key': VIBE_APP_KEY,
-    },
+    headers,
     body: JSON.stringify({ requests }),
   });
 
@@ -195,7 +208,6 @@ async function callVibeBatch(
 }
 
 // ─── Маппинг полей Vibecode camelCase → BX24 UPPER_CASE ─────────────────────
-// Согласно /v1/leads/fields и /v1/deals/fields
 
 type Rec = Record<string, unknown>;
 
@@ -215,7 +227,6 @@ function mapUser(v: Rec): Rec {
 }
 
 function mapLead(v: Rec): Rec {
-  // stageSemanticId='S' = успешно конвертирован, isConvert != null тоже признак конверсии
   const converted = v.stageSemanticId === 'S' || (v.isConvert != null && v.isConvert !== false);
   return {
     ID: String(v.id ?? ''),
@@ -223,9 +234,9 @@ function mapLead(v: Rec): Rec {
     NAME: v.name ?? '',
     LAST_NAME: v.lastName ?? '',
     SECOND_NAME: v.secondName ?? '',
-    DATE_CREATE: v.createdTime ?? v.createdAt ?? '',  // Vibecode: createdTime
+    DATE_CREATE: v.createdTime ?? v.createdAt ?? '',
     DATE_CONVERT: converted ? (v.dateClosed ?? v.movedTime ?? null) : null,
-    STATUS_ID: String(v.stageId ?? v.statusId ?? ''), // stageId — код стадии лида
+    STATUS_ID: String(v.stageId ?? v.statusId ?? ''),
     ASSIGNED_BY_ID: String(v.assignedById ?? ''),
     CATEGORY_ID: String(v.categoryId ?? '0'),
     OPPORTUNITY: String(v.opportunity ?? '0'),
@@ -259,7 +270,6 @@ function mapCategory(v: Rec): Rec {
   };
 }
 
-// Маппинг ключей фильтра: BX24 → Vibecode
 function remapFilter(
   filter: Rec,
   mapper: (k: string) => string,
@@ -306,10 +316,10 @@ function statusFilterKey(k: string): string {
   return map[k] ?? k;
 }
 
-// ─── Кэш (предотвращает 429 при одновременном открытии нескольких вкладок) ───
+// ─── Кэш ──────────────────────────────────────────────────────────────────────
 
 const _cache = new Map<string, { items: unknown[]; ts: number }>();
-const CACHE_TTL = 60_000; // 60 секунд
+const CACHE_TTL = 60_000;
 
 function cacheGet(key: string): unknown[] | null {
   const e = _cache.get(key);
@@ -322,7 +332,7 @@ function cacheSet(key: string, items: unknown[]) {
   _cache.set(key, { items, ts: Date.now() });
 }
 
-// ─── Обработчик POST от Битрикс24 (открытие приложения) ─────────────────────
+// ─── Обработчик POST от Битрикс24 ────────────────────────────────────────────
 
 app.post('/', (req, res) => {
   const body = req.body as Rec;
@@ -339,15 +349,13 @@ app.post('/', (req, res) => {
   }
 });
 
-// ─── GET /api/debug — все заголовки входящего запроса (Rule 5) ───────────────
-// Используется для проверки что Gateway правильно инжектирует X-Vibe-Authorization
+// ─── GET /api/debug ───────────────────────────────────────────────────────────
 
 app.get('/api/debug', (req, res) => {
   log('debug', `GET /api/debug — показываем все заголовки`);
 
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(req.headers)) {
-    // Скрываем значение Authorization/Token-заголовков, но показываем наличие и длину
     const sensitive = ['authorization', 'x-vibe-authorization'].includes(k.toLowerCase());
     headers[k] = sensitive ? `[REDACTED, len=${String(v).length}]` : String(v);
   }
@@ -374,9 +382,7 @@ app.get('/api/debug', (req, res) => {
   });
 });
 
-// ─── POST /api/batch — загрузка нескольких BX24-методов за один запрос ───────
-// Объединяет user.get + crm.lead.list + crm.status.list + crm.category.list
-// в один вызов POST /v1/batch, сокращая число запросов к Вайбкод API
+// ─── POST /api/batch ──────────────────────────────────────────────────────────
 
 app.post('/api/batch', async (req, res) => {
   const bearerToken = req.headers['x-vibe-authorization'] as string | undefined;
@@ -395,7 +401,6 @@ app.post('/api/batch', async (req, res) => {
 
   log('batch-api', `команды: ${Object.keys(commands).join(', ')}`);
 
-  // Строим vibecode batch requests из BX24-команд
   const vibeRequests: Record<string, BatchRequest> = {};
   const mapperByName: Record<string, ((v: Rec) => Rec) | null> = {};
 
@@ -462,7 +467,7 @@ app.post('/api/batch', async (req, res) => {
   }
 
   try {
-    const batchResp = await callVibeBatch(vibeRequests);
+    const batchResp = await callVibeBatch(vibeRequests, bearerToken);
     const results: Record<string, { result: unknown[]; next?: number }> = {};
 
     for (const [name, vibeResp] of Object.entries(batchResp)) {
@@ -496,7 +501,7 @@ app.get('/api/healthcheck', (req, res) => {
   });
 });
 
-// ─── GET /api/me — данные пользователя из заголовков Gateway ─────────────────
+// ─── GET /api/me ──────────────────────────────────────────────────────────────
 
 app.get('/api/me', (req, res) => {
   const encodedName = req.headers['x-vibe-user-name-encoded'] as string | undefined;
@@ -515,11 +520,10 @@ app.get('/api/me', (req, res) => {
 });
 
 // ─── POST /api/bx — прокси к Вайбкод Entity API ──────────────────────────────
-// Rule 2: берёт X-Vibe-Authorization из запроса, передаёт как Bearer-токен
+// Rule 2: X-Vibe-Authorization → Authorization: Bearer (forwarded to Vibecode API)
 // Rule 4: если токена нет — 401
 
 app.post('/api/bx', async (req, res) => {
-  // Rule 2: получаем токен пользователя из заголовка инжектированного Gateway
   const bearerToken = req.headers['x-vibe-authorization'] as string | undefined;
 
   const { method, params } = req.body as { method: string; params?: Rec };
@@ -529,7 +533,6 @@ app.post('/api/bx', async (req, res) => {
     return;
   }
 
-  // Rule 4: без токена — 401
   if (!bearerToken) {
     log('bx', `${method}: нет X-Vibe-Authorization — 401`);
     res.status(401).json({
@@ -565,7 +568,6 @@ app.post('/api/bx', async (req, res) => {
         vibeMethod = 'GET';
         mapper = mapUser;
 
-        // Кэш: пользователи редко меняются, не стоит дёргать API на каждую вкладку
         const cacheKey = `users:${bearerToken.slice(-20)}:${qp.toString()}`;
         const cached = cacheGet(cacheKey);
         if (cached) {
@@ -574,7 +576,7 @@ app.post('/api/bx', async (req, res) => {
           return;
         }
 
-        const vResp = await callVibecode(vibeUrl, { method: vibeMethod });
+        const vResp = await callVibecode(vibeUrl, { method: vibeMethod, bearerToken });
         const rawUsers = (Array.isArray(vResp.data) ? vResp.data : []) as Rec[];
         const users = rawUsers.map(mapUser);
 
@@ -637,18 +639,56 @@ app.post('/api/bx', async (req, res) => {
         break;
       }
 
-      // ── timeman.timecontrol.report.get → GET /v1/workday/status ────────────
-      // Вайбкод не поддерживает исторические отчёты timeman;
-      // /v1/workday/status возвращает текущий статус рабочего дня авторизованного пользователя
+      // ── timeman.timecontrol.report.get → GET /v1/timeman/entries ───────────
       case 'timeman.timecontrol.report.get': {
-        log('bx', `timeman: запрашиваем статус рабочего дня через /v1/workday/status`);
-        vibeUrl = `${VIBE_API}/workday/status`;
-        vibeMethod = 'GET';
+        const userIds = (params?.USER_IDS as string[]) || [];
+        const dateFrom = ((params?.DATE_FROM as string) || '').slice(0, 10);
+        const dateTo = ((params?.DATE_TO as string) || '').slice(0, 10);
 
-        const vResp = await callVibecode(vibeUrl, { method: vibeMethod });
-        log('bx', `timeman: ответ=${JSON.stringify(vResp.data).slice(0, 200)}`);
-        // Возвращаем пустой результат — исторические данные timeman не поддерживаются API
-        res.json({ result: null, raw: vResp.data });
+        log('bx', `timeman: userId count=${userIds.length}, from=${dateFrom}, to=${dateTo}`);
+
+        const qp = new URLSearchParams();
+        if (dateFrom) qp.set('filter[date][from]', dateFrom);
+        if (dateTo) qp.set('filter[date][to]', dateTo);
+        // Передаём userId как массив
+        for (const uid of userIds) {
+          qp.append('filter[userId][]', uid);
+        }
+        qp.set('limit', '1000');
+
+        const vibeResp = await callVibecode(
+          `${VIBE_API}/timeman/entries?${qp.toString()}`,
+          { method: 'GET', bearerToken },
+        );
+
+        const entries = (Array.isArray(vibeResp.data) ? vibeResp.data : []) as Rec[];
+        log('bx', `timeman: получено ${entries.length} записей`);
+        log('bx', `timeman: пример записи = ${JSON.stringify(entries[0] ?? null).slice(0, 200)}`);
+
+        // Группируем по userId и дате → { USERS: { userId: { REPORT: { date: { DURATION: seconds } } } } }
+        const USERS: Record<string, { REPORT: Record<string, { DURATION: number }> }> = {};
+        for (const entry of entries) {
+          const uid = String(
+            entry.userId ?? entry.user_id ?? entry.USER_ID ?? '',
+          );
+          // Дата: пробуем разные поля
+          const rawDate = String(
+            entry.date ?? entry.startDate ?? entry.start ?? entry.DATE ?? '',
+          ).slice(0, 10);
+          // Длительность в секундах
+          const duration = Number(
+            entry.duration ?? entry.workTime ?? entry.work_time ??
+            entry.DURATION ?? entry.WORK_TIME ?? 0,
+          );
+
+          if (!uid || !rawDate) continue;
+          if (!USERS[uid]) USERS[uid] = { REPORT: {} };
+          if (!USERS[uid].REPORT[rawDate]) USERS[uid].REPORT[rawDate] = { DURATION: 0 };
+          USERS[uid].REPORT[rawDate].DURATION += duration;
+        }
+
+        log('bx', `timeman: сгруппировано по ${Object.keys(USERS).length} пользователям`);
+        res.json({ result: { USERS }, next: undefined });
         return;
       }
 
@@ -659,16 +699,15 @@ app.post('/api/bx', async (req, res) => {
       }
     }
 
-    // Общий путь для методов с виб-URL + mapper
     const vResp = await callVibecode(vibeUrl!, {
       method: vibeMethod!,
       body: vibeBody,
+      bearerToken,
     });
 
     const rawItems = (Array.isArray(vResp.data) ? vResp.data : vResp.data != null ? [vResp.data] : []) as Rec[];
     const items = mapper ? rawItems.map(mapper) : rawItems;
 
-    // Пагинация через meta.hasMore
     const hasMore = vResp.meta?.hasMore ?? false;
     const next = hasMore ? startOffset + items.length : undefined;
 
@@ -786,7 +825,6 @@ console.log(`[${ts()}] BX24_DOMAIN: ${BX24_DOMAIN}`);
 if (!VIBE_APP_KEY) {
   console.error(`[${ts()}] КРИТИЧЕСКАЯ ОШИБКА: переменная окружения VIBE_APP_KEY не задана!`);
   console.error(`[${ts()}] Без неё все запросы к Вайбкод API вернут "API key required".`);
-  console.error(`[${ts()}] Добавьте секрет VIBE_APP_KEY в Settings → Secrets → Actions репозитория GitHub.`);
   process.exit(1);
 }
 

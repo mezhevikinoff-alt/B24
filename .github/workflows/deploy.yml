@@ -2,16 +2,15 @@ name: Deploy to Vibecode
 
 on:
   push:
-    branches: [claude/stoic-brahmagupta-1de51x, main]
+    branches: [claude/pensive-johnson-gbemvh, claude/stoic-brahmagupta-1de51x, main]
   workflow_dispatch:
 
 env:
-  VIBE_KEY:       ${{ secrets.VIBE_API_KEY || 'vibe_api_wXJ94h3wA502Vmsw2ksXZTraKgElqItx_599bd9' }}
-  VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY }}
-  DEPLOY_URL:     https://vibecode.bitrix24.tech/v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d/deploy
+  VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY || 'vibe_app_local_6a33e165084b01_16948434_JBjFVOfGL0oc8ohKjnjnpgr5P8hDTYhUlEIHctmdXg4fGYV3Tt_8ecffc' }}
+  DEPLOY_URL:     https://vibecode.bitrix24.tech/v1/infra/servers/3a540f54-003c-407e-8e20-744142ee12be/deploy
   VIBE_API_URL:   https://vibecode.bitrix24.tech/v1
-  APP_SERVER:     https://app-214265deb83b.vibecode.bitrix24.tech
-  APP_ID:         b6e86834-8b84-42c4-be4b-2bd2b092aa91
+  APP_SERVER:     https://app-2afbe79d4d2e.vibecode.bitrix24.tech
+  VIBE_APP_KEY:   ${{ secrets.VIBE_APP_KEY || 'vibe_app_local_6a33e165084b01_16948434_JBjFVOfGL0oc8ohKjnjnpgr5P8hDTYhUlEIHctmdXg4fGYV3Tt_8ecffc' }}
 
 jobs:
   deploy:
@@ -33,18 +32,19 @@ jobs:
 
           CODE=$(curl -s -w "%{http_code}" -X POST \
             -o /tmp/deploy.json \
+            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
             -H "X-Api-Key: $VIBE_INFRA_KEY" \
             -H "Content-Type: application/json" \
-            -H "X-Skip-Source-Snapshot: deploy from GitHub" \
             -d "$(jq -n \
               --arg url "$SOURCE_URL" \
+              --arg appKey "$VIBE_APP_KEY" \
               '{
                 source: {url: $url},
                 runtime: "node20",
                 install: "cd B24-*/ && cd frontend && npm install && npm run build && cd ../backend && npm install && npm run build",
                 start: "cd B24-*/ && node backend/dist/server.js",
                 port: 3000,
-                env: {NODE_ENV: "production", PORT: "3000", VIBE_APP_KEY: "${{ secrets.VIBE_APP_KEY }}", BX24_DOMAIN: "credburo.bitrix24.ru"}
+                env: {NODE_ENV: "production", PORT: "3000", VIBE_APP_KEY: $appKey, BX24_DOMAIN: "credburo.bitrix24.ru"}
               }')" \
             "$DEPLOY_URL?stream=false")
 
@@ -66,31 +66,15 @@ jobs:
             echo "::error::Deploy API HTTP $CODE"
           fi
 
-      # ── PATCH appUrl on Vibecode management API ───────────────────────────
-      # VIBE_INFRA_KEY works (HTTP 400 vs 401 for VIBE_KEY), handlerUrl is readonly
-      - name: Set appUrl on Vibecode API
-        id: set_url
-        if: always()
-        run: |
-          CODE=$(curl -s -w "%{http_code}" -X PATCH \
-            -o /tmp/patch_url.json \
-            -H "X-Api-Key: $VIBE_INFRA_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"appUrl\":\"$APP_SERVER\"}" \
-            "$VIBE_API_URL/apps/$APP_ID")
-          echo "PATCH appUrl with VIBE_INFRA_KEY: HTTP $CODE"
-          cat /tmp/patch_url.json | jq . 2>/dev/null || cat /tmp/patch_url.json
-          APP_URL=$(jq -r '.data.appUrl // empty' /tmp/patch_url.json 2>/dev/null | grep -v '^null$' | grep -v '^$' | head -1 || true)
-          echo "app_url=${APP_URL:-$APP_SERVER}" >> $GITHUB_OUTPUT
-
       # ── Repair tunnel routing if needed ──────────────────────────────────
-      - name: Repair tunnel routing (if gateway routing failed)
+      - name: Repair tunnel routing
         if: always()
         run: |
-          echo "=== POST repair (ensure tunnel routing converges) ==="
+          echo "=== POST repair ==="
           curl -s -X POST \
+            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
             -H "X-Api-Key: $VIBE_INFRA_KEY" \
-            "https://vibecode.bitrix24.tech/v1/infra/servers/85110525-94ea-40a1-a611-d9dc9a7dd00d/repair" \
+            "https://vibecode.bitrix24.tech/v1/infra/servers/3a540f54-003c-407e-8e20-744142ee12be/repair" \
             | jq . 2>/dev/null || echo "repair call done"
 
       # ── Summary ───────────────────────────────────────────────────────────
@@ -99,20 +83,17 @@ jobs:
         env:
           DEPLOYED:  ${{ steps.deploy.outputs.deployed }}
           HTTP_CODE: ${{ steps.deploy.outputs.deploy_code }}
-          APP_URL:   ${{ steps.set_url.outputs.app_url }}
         run: |
-          FINAL_URL="${APP_URL:-$APP_SERVER}"
           echo "================================================================"
           echo "  ОРК Отчёты — Deploy Summary"
           echo "================================================================"
           echo "  Deploy status  : ${DEPLOYED:-false} (HTTP ${HTTP_CODE:-?})"
           echo "  App server     : $APP_SERVER"
-          echo "  appUrl         : ${APP_URL:-<не установлен>}"
           echo "================================================================"
           echo ""
           echo "Встройка в левое меню Битрикс24:"
           echo "  BX24.callMethod('placement.bind', {"
           echo "    PLACEMENT: 'APPLICATION_LEFT_MENU',"
-          echo "    HANDLER:   '$FINAL_URL',"
+          echo "    HANDLER:   '$APP_SERVER',"
           echo "    LANG_ALL:  { ru: { NAME: 'ОРК — Отчёты' } }"
           echo "  }, console.log);"
