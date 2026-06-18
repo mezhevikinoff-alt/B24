@@ -26,15 +26,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const initApp = async () => {
-      console.log('[AppContext] init — using Vibecode gateway auth (x-vibe-authorization injected by server)');
-
       try {
-        const me = await fetch('/api/me').then((r) => r.json()) as {
-          userId?: string;
-          userName?: string;
-          isAdmin?: boolean;
-        };
+        const r = await fetch('/api/me');
+        const text = await r.text();
+        let me: { userId?: string; userName?: string; isAdmin?: boolean } = {};
+        try {
+          me = JSON.parse(text);
+        } catch {
+          // /api/me returned HTML — gateway likely not injecting headers yet, continue anyway
+          console.warn('[AppContext] /api/me returned non-JSON, proceeding without user info');
+        }
+
         setIsAdmin(me.isAdmin === true);
+
         if (me.userId) {
           try {
             const full = await getCurrentUserFull(me.userId);
@@ -44,7 +48,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         }
       } catch {
-        // show app even if /api/me fails
+        // network error — show app anyway
+        console.warn('[AppContext] /api/me failed, continuing without user info');
       }
 
       setIsReady(true);
