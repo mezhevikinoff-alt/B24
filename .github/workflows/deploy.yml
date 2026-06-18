@@ -27,42 +27,45 @@ jobs:
         id: deploy
         run: |
           SOURCE_URL="https://github.com/${{ github.repository }}/archive/refs/heads/${{ github.ref_name }}.tar.gz"
-          echo "=== POST $DEPLOY_URL?stream=true ==="
+          echo "=== POST $DEPLOY_URL ==="
           echo "Source: $SOURCE_URL"
 
-          PAYLOAD=$(jq -n \
-            --arg url "$SOURCE_URL" \
-            --arg appKey "$VIBE_APP_KEY" \
-            '{
-              source: {url: $url},
-              runtime: "node20",
-              install: "cd B24-*/ && cd frontend && npm install && npm run build && cd ../backend && npm install && npm run build",
-              start: "cd B24-*/ && node backend/dist/server.js",
-              port: 3000,
-              env: {NODE_ENV: "production", PORT: "3000", VIBE_APP_KEY: $appKey, BX24_DOMAIN: "credburo.bitrix24.ru"}
-            }')
-
-          # Stream build output — shows up live in Actions logs
-          curl -s -w "\n__HTTP_CODE:%{http_code}__\n" -X POST \
-            --max-time 300 \
+          CODE=$(curl -s -w "%{http_code}" -X POST \
+            -o /tmp/deploy.json \
+            --max-time 60 \
             -H "Authorization: Bearer $VIBE_INFRA_KEY" \
             -H "X-Api-Key: $VIBE_INFRA_KEY" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD" \
-            "$DEPLOY_URL?stream=true" | tee /tmp/deploy_raw.txt
+            -d "$(jq -n \
+              --arg url "$SOURCE_URL" \
+              --arg appKey "$VIBE_APP_KEY" \
+              '{
+                source: {url: $url},
+                runtime: "node20",
+                install: "cd B24-*/ && cd frontend && npm install && npm run build && cd ../backend && npm install && npm run build",
+                start: "cd B24-*/ && node backend/dist/server.js",
+                port: 3000,
+                env: {NODE_ENV: "production", PORT: "3000", VIBE_APP_KEY: $appKey, BX24_DOMAIN: "credburo.bitrix24.ru"}
+              }')" \
+            "$DEPLOY_URL")
 
-          CODE=$(grep "__HTTP_CODE:" /tmp/deploy_raw.txt | grep -oP '\d+' | tail -1 || echo "0")
-          grep -v "__HTTP_CODE:" /tmp/deploy_raw.txt > /tmp/deploy.json || true
-
-          echo "HTTP $CODE"
+          echo "=== HTTP $CODE ==="
+          cat /tmp/deploy.json | jq . 2>/dev/null || cat /tmp/deploy.json
           echo "deploy_code=$CODE" >> $GITHUB_OUTPUT
 
           if [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]]; then
-            echo "deployed=true" >> $GITHUB_OUTPUT
-            echo "::notice::Deploy request accepted (HTTP $CODE) — build running on Vibecode"
+            if [[ "$(jq -r '.success // empty' /tmp/deploy.json 2>/dev/null)" == "true" ]]; then
+              echo "deployed=true" >> $GITHUB_OUTPUT
+              echo "::notice::Deploy accepted — build is running on Vibecode"
+            else
+              echo "deployed=false" >> $GITHUB_OUTPUT
+              ERR=$(jq -r '.error.message // .error // "unknown error"' /tmp/deploy.json 2>/dev/null || cat /tmp/deploy.json)
+              echo "::error::Vibecode returned success:false — $ERR"
+              exit 1
+            fi
           else
             echo "deployed=false" >> $GITHUB_OUTPUT
-            echo "::error::Deploy API HTTP $CODE"
+            echo "::error::Deploy API HTTP $CODE — $(cat /tmp/deploy.json)"
             exit 1
           fi
 
