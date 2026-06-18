@@ -27,7 +27,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const initApp = async () => {
       try {
-        const r = await fetch('/api/me');
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
+        let r: Response;
+        try {
+          r = await fetch('/api/me', { signal: controller.signal });
+          clearTimeout(timer);
+        } catch {
+          clearTimeout(timer);
+          console.warn('[AppContext] /api/me failed or timed out, continuing without user info');
+          setIsReady(true);
+          return;
+        }
+
         const text = await r.text();
         let me: { userId?: string; userName?: string; isAdmin?: boolean } = {};
         try {

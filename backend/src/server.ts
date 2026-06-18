@@ -105,6 +105,7 @@ async function callVibecodeDirect(
     method,
     headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
+    signal: AbortSignal.timeout(30000),
   });
 
   const text = await response.text();
@@ -163,6 +164,7 @@ async function callVibeBatch(
     method: 'POST',
     headers,
     body: JSON.stringify({ requests }),
+    signal: AbortSignal.timeout(30000),
   });
 
   const text = await response.text();
