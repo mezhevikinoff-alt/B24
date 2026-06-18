@@ -7,7 +7,7 @@ on:
 
 env:
   VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY || 'vibe_app_local_6a33e165084b01_16948434_JBjFVOfGL0oc8ohKjnjnpgr5P8hDTYhUlEIHctmdXg4fGYV3Tt_8ecffc' }}
-  DEPLOY_URL:     https://vibecode.bitrix24.tech/v1/infra/servers/3a540f54-003c-407e-8e20-744142ee12be/deploy
+  EXEC_URL:       https://vibecode.bitrix24.tech/v1/infra/servers/3a540f54-003c-407e-8e20-744142ee12be/exec
   VIBE_API_URL:   https://vibecode.bitrix24.tech/v1
   APP_SERVER:     https://app-2afbe79d4d2e.vibecode.bitrix24.tech
   VIBE_APP_KEY:   ${{ secrets.VIBE_APP_KEY || 'vibe_app_local_6a33e165084b01_16948434_JBjFVOfGL0oc8ohKjnjnpgr5P8hDTYhUlEIHctmdXg4fGYV3Tt_8ecffc' }}
@@ -22,16 +22,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Deploy to Vibecode via /deploy API ────────────────────────────────
-      - name: Deploy to Vibecode server
-        id: deploy
+      # ── Probe /exec to check auth and discover server environment ─────────
+      - name: Probe exec endpoint
+        id: probe
         run: |
           SOURCE_URL="https://github.com/${{ github.repository }}/archive/refs/heads/${{ github.ref_name }}.tar.gz"
-          echo "=== POST $DEPLOY_URL ==="
-          echo "Source: $SOURCE_URL"
+          echo "=== POST $EXEC_URL ==="
 
           CODE=$(curl -s -w "%{http_code}" -X POST \
-            -o /tmp/deploy.json \
+            -o /tmp/exec.json \
             --max-time 60 \
             -H "Authorization: Bearer $VIBE_INFRA_KEY" \
             -H "X-Api-Key: $VIBE_INFRA_KEY" \
@@ -47,25 +46,25 @@ jobs:
                 port: 3000,
                 env: {NODE_ENV: "production", PORT: "3000", VIBE_APP_KEY: $appKey, BX24_DOMAIN: "credburo.bitrix24.ru"}
               }')" \
-            "$DEPLOY_URL")
+            "$EXEC_URL")
 
           echo "=== HTTP $CODE ==="
-          cat /tmp/deploy.json | jq . 2>/dev/null || cat /tmp/deploy.json
-          echo "deploy_code=$CODE" >> $GITHUB_OUTPUT
+          cat /tmp/exec.json | jq . 2>/dev/null || cat /tmp/exec.json
+          echo "exec_code=$CODE" >> $GITHUB_OUTPUT
 
           if [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]]; then
-            if [[ "$(jq -r '.success // empty' /tmp/deploy.json 2>/dev/null)" == "true" ]]; then
+            if [[ "$(jq -r '.success // empty' /tmp/exec.json 2>/dev/null)" == "true" ]]; then
               echo "deployed=true" >> $GITHUB_OUTPUT
-              echo "::notice::Deploy accepted — build is running on Vibecode"
+              echo "::notice::Exec accepted — build is running on Vibecode"
             else
               echo "deployed=false" >> $GITHUB_OUTPUT
-              ERR=$(jq -r '.error.message // .error // "unknown error"' /tmp/deploy.json 2>/dev/null || cat /tmp/deploy.json)
+              ERR=$(jq -r '.error.message // .error // "unknown error"' /tmp/exec.json 2>/dev/null || cat /tmp/exec.json)
               echo "::error::Vibecode returned success:false — $ERR"
               exit 1
             fi
           else
             echo "deployed=false" >> $GITHUB_OUTPUT
-            echo "::error::Deploy API HTTP $CODE — $(cat /tmp/deploy.json)"
+            echo "::error::Exec API HTTP $CODE — $(cat /tmp/exec.json)"
             exit 1
           fi
 
@@ -84,8 +83,8 @@ jobs:
       - name: Summary
         if: always()
         env:
-          DEPLOYED:  ${{ steps.deploy.outputs.deployed }}
-          HTTP_CODE: ${{ steps.deploy.outputs.deploy_code }}
+          DEPLOYED:  ${{ steps.probe.outputs.deployed }}
+          HTTP_CODE: ${{ steps.probe.outputs.exec_code }}
         run: |
           echo "================================================================"
           echo "  ОРК Отчёты — Deploy Summary"
