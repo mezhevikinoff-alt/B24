@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
 
 env:
-  VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY || 'vibe_app_local_6a33e165084b01_16948434_JBjFVOfGL0oc8ohKjnjnpgr5P8hDTYhUlEIHctmdXg4fGYV3Tt_8ecffc' }}
-  EXEC_URL:       https://vibecode.bitrix24.tech/v1/infra/servers/3a540f54-003c-407e-8e20-744142ee12be/exec
-  VIBE_API_URL:   https://vibecode.bitrix24.tech/v1
-  APP_SERVER:     https://app-2afbe79d4d2e.vibecode.bitrix24.tech
-  VIBE_APP_KEY:   ${{ secrets.VIBE_APP_KEY || 'vibe_app_local_6a33e165084b01_16948434_JBjFVOfGL0oc8ohKjnjnpgr5P8hDTYhUlEIHctmdXg4fGYV3Tt_8ecffc' }}
+  DEPLOY_URL:   https://vibecode.bitrix24.tech/v1/infra/servers/3a540f54-003c-407e-8e20-744142ee12be/deploy
+  VIBE_API_URL: https://vibecode.bitrix24.tech/v1
+  APP_SERVER:   https://app-2afbe79d4d2e.vibecode.bitrix24.tech
+  VIBE_INFRA_KEY: ${{ secrets.VIBE_INFRA_KEY }}
+  VIBE_APP_KEY:   ${{ secrets.VIBE_APP_KEY }}
 
 jobs:
   deploy:
@@ -22,18 +22,32 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Probe /exec to check auth and discover server environment ─────────
-      - name: Probe exec endpoint
-        id: probe
+      # ── Debug: check which secrets are loaded ─────────────────────────────
+      - name: Debug secrets
+        run: |
+          echo "VIBE_INFRA_KEY length : ${#VIBE_INFRA_KEY}"
+          echo "VIBE_APP_KEY   length : ${#VIBE_APP_KEY}"
+          if [[ -z "$VIBE_INFRA_KEY" ]]; then
+            echo "::warning::VIBE_INFRA_KEY is EMPTY — secret not set in GitHub"
+          fi
+          if [[ -z "$VIBE_APP_KEY" ]]; then
+            echo "::warning::VIBE_APP_KEY is EMPTY — secret not set in GitHub"
+          fi
+
+      # ── Deploy via /deploy with VIBE_INFRA_KEY ───────────────────────────
+      - name: Deploy to Vibecode server
+        id: deploy
         run: |
           SOURCE_URL="https://github.com/${{ github.repository }}/archive/refs/heads/${{ github.ref_name }}.tar.gz"
-          echo "=== POST $EXEC_URL ==="
+          echo "=== POST $DEPLOY_URL ==="
+          echo "Source: $SOURCE_URL"
+          echo "Auth key length: ${#VIBE_INFRA_KEY}"
 
           CODE=$(curl -s -w "%{http_code}" -X POST \
-            -o /tmp/exec.json \
+            -o /tmp/deploy.json \
             --max-time 60 \
-            -H "Authorization: Bearer $VIBE_APP_KEY" \
-            -H "X-Api-Key: $VIBE_APP_KEY" \
+            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
+            -H "X-Api-Key: $VIBE_INFRA_KEY" \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg url "$SOURCE_URL" \
@@ -46,25 +60,25 @@ jobs:
                 port: 3000,
                 env: {NODE_ENV: "production", PORT: "3000", VIBE_APP_KEY: $appKey, BX24_DOMAIN: "credburo.bitrix24.ru"}
               }')" \
-            "$EXEC_URL")
+            "$DEPLOY_URL")
 
           echo "=== HTTP $CODE ==="
-          cat /tmp/exec.json | jq . 2>/dev/null || cat /tmp/exec.json
-          echo "exec_code=$CODE" >> $GITHUB_OUTPUT
+          cat /tmp/deploy.json | jq . 2>/dev/null || cat /tmp/deploy.json
+          echo "deploy_code=$CODE" >> $GITHUB_OUTPUT
 
           if [[ "$CODE" -ge 200 && "$CODE" -lt 300 ]]; then
-            if [[ "$(jq -r '.success // empty' /tmp/exec.json 2>/dev/null)" == "true" ]]; then
+            if [[ "$(jq -r '.success // empty' /tmp/deploy.json 2>/dev/null)" == "true" ]]; then
               echo "deployed=true" >> $GITHUB_OUTPUT
-              echo "::notice::Exec accepted — build is running on Vibecode"
+              echo "::notice::Deploy accepted — build is running on Vibecode"
             else
               echo "deployed=false" >> $GITHUB_OUTPUT
-              ERR=$(jq -r '.error.message // .error // "unknown error"' /tmp/exec.json 2>/dev/null || cat /tmp/exec.json)
+              ERR=$(jq -r '.error.message // .error // "unknown error"' /tmp/deploy.json 2>/dev/null || cat /tmp/deploy.json)
               echo "::error::Vibecode returned success:false — $ERR"
               exit 1
             fi
           else
             echo "deployed=false" >> $GITHUB_OUTPUT
-            echo "::error::Exec API HTTP $CODE — $(cat /tmp/exec.json)"
+            echo "::error::Deploy API HTTP $CODE — $(cat /tmp/deploy.json)"
             exit 1
           fi
 
@@ -83,8 +97,8 @@ jobs:
       - name: Summary
         if: always()
         env:
-          DEPLOYED:  ${{ steps.probe.outputs.deployed }}
-          HTTP_CODE: ${{ steps.probe.outputs.exec_code }}
+          DEPLOYED:  ${{ steps.deploy.outputs.deployed }}
+          HTTP_CODE: ${{ steps.deploy.outputs.deploy_code }}
         run: |
           echo "================================================================"
           echo "  ОРК Отчёты — Deploy Summary"
@@ -92,10 +106,3 @@ jobs:
           echo "  Deploy status  : ${DEPLOYED:-false} (HTTP ${HTTP_CODE:-?})"
           echo "  App server     : $APP_SERVER"
           echo "================================================================"
-          echo ""
-          echo "Встройка в левое меню Битрикс24:"
-          echo "  BX24.callMethod('placement.bind', {"
-          echo "    PLACEMENT: 'APPLICATION_LEFT_MENU',"
-          echo "    HANDLER:   '$APP_SERVER',"
-          echo "    LANG_ALL:  { ru: { NAME: 'ОРК — Отчёты' } }"
-          echo "  }, console.log);"
