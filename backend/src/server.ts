@@ -68,19 +68,45 @@ interface VibeResponse {
   error?: { code?: string; message?: string } | string;
 }
 
+// ─── Rate limiter: 200мс между запросами = максимум 5 req/s ──────────────────
+// Все запросы к Вайбкод API проходят через очередь, исключая 429
+
+let _rateLimitLock: Promise<void> = Promise.resolve();
+const RATE_INTERVAL_MS = 200;
+
+function scheduleVibecodeRequest<T>(fn: () => Promise<T>): Promise<T> {
+  const scheduled = _rateLimitLock.then(async () => {
+    // 200мс минимальный интервал после предыдущего запроса
+    await new Promise<void>(r => setTimeout(r, RATE_INTERVAL_MS));
+    return fn();
+  });
+  // Цепочка: следующий запрос ждёт завершения текущего (успех или ошибка)
+  _rateLimitLock = scheduled.then(() => {}, () => {});
+  return scheduled;
+}
+
 async function callVibecode(
   url: string,
   opts: { method?: string; body?: unknown; bearerToken: string },
+  attempt = 1,
+): Promise<VibeResponse> {
+  return scheduleVibecodeRequest(() => callVibecodeDirect(url, opts, attempt));
+}
+
+async function callVibecodeDirect(
+  url: string,
+  opts: { method?: string; body?: unknown; bearerToken: string },
+  attempt: number,
 ): Promise<VibeResponse> {
   const method = opts.method || 'GET';
-  log('vibecode', `→ ${method} ${url}${opts.body ? ' body=' + JSON.stringify(opts.body).slice(0, 200) : ''}`);
+  log('vibecode', `→ [попытка ${attempt}/3] ${method} ${url}${opts.body ? ' body=' + JSON.stringify(opts.body).slice(0, 200) : ''}`);
 
   const t0 = Date.now();
   const response = await fetch(url, {
     method,
     headers: {
       'Content-Type': 'application/json',
-      'X-Api-Key': VIBE_APP_KEY,               // Rule 1: ключ приложения
+      'X-Api-Key': VIBE_APP_KEY,                    // Rule 1: ключ приложения
       'Authorization': `Bearer ${opts.bearerToken}`, // Rule 2: токен пользователя
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -90,8 +116,14 @@ async function callVibecode(
   const elapsed = Date.now() - t0;
   log('vibecode', `← HTTP ${response.status} за ${elapsed}мс: ${text.slice(0, 300)}`);
 
-  if (!response.ok && response.status === 429) {
-    throw new Error(`429 Too Many Requests — превышен лимит запросов к Вайбкод API`);
+  // Обработка 429: ждём 1с и повторяем (максимум 3 попытки)
+  if (response.status === 429) {
+    if (attempt < 3) {
+      log('vibecode', `429 Too Many Requests — ждём 1с и повторяем (попытка ${attempt + 1}/3)`);
+      await new Promise<void>(r => setTimeout(r, 1000));
+      return callVibecodeDirect(url, opts, attempt + 1);
+    }
+    throw new Error(`429 Too Many Requests — превышен лимит запросов после 3 попыток`);
   }
 
   let parsed: VibeResponse;
@@ -110,6 +142,59 @@ async function callVibecode(
   }
 
   return parsed;
+}
+
+// ─── Batch API: несколько запросов за один HTTP-вызов ────────────────────────
+
+interface BatchRequest {
+  method: string;
+  path: string;
+  body?: unknown;
+}
+
+interface BatchVibeResponse {
+  success: boolean;
+  responses?: Record<string, VibeResponse>;
+  error?: unknown;
+}
+
+async function callVibeBatch(
+  requests: Record<string, BatchRequest>,
+  bearerToken: string,
+): Promise<Record<string, VibeResponse>> {
+  log('batch', `→ batch из ${Object.keys(requests).length} запросов: ${Object.keys(requests).join(', ')}`);
+  const t0 = Date.now();
+
+  const response = await fetch(`${VIBE_API}/batch`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Api-Key': VIBE_APP_KEY,
+      'Authorization': `Bearer ${bearerToken}`,
+    },
+    body: JSON.stringify({ requests }),
+  });
+
+  const text = await response.text();
+  const elapsed = Date.now() - t0;
+  log('batch', `← HTTP ${response.status} за ${elapsed}мс: ${text.slice(0, 500)}`);
+
+  if (response.status === 429) {
+    throw new Error(`429 Too Many Requests — превышен лимит (batch)`);
+  }
+
+  let parsed: BatchVibeResponse;
+  try {
+    parsed = JSON.parse(text) as BatchVibeResponse;
+  } catch {
+    throw new Error(`Не-JSON batch ответ (HTTP ${response.status}): ${text.slice(0, 200)}`);
+  }
+
+  if (!parsed.success) {
+    throw new Error(`Batch API ошибка: ${JSON.stringify(parsed.error)}`);
+  }
+
+  return parsed.responses || {};
 }
 
 // ─── Маппинг полей Vibecode camelCase → BX24 UPPER_CASE ─────────────────────
@@ -290,6 +375,116 @@ app.get('/api/debug', (req, res) => {
     },
     allHeaders: headers,
   });
+});
+
+// ─── POST /api/batch — загрузка нескольких BX24-методов за один запрос ───────
+// Объединяет user.get + crm.lead.list + crm.status.list + crm.category.list
+// в один вызов POST /v1/batch, сокращая число запросов к Вайбкод API
+
+app.post('/api/batch', async (req, res) => {
+  const bearerToken = req.headers['x-vibe-authorization'] as string | undefined;
+
+  if (!bearerToken) {
+    log('batch-api', 'нет X-Vibe-Authorization — 401');
+    res.status(401).json({ error: 'Откройте приложение через Битрикс24' });
+    return;
+  }
+
+  const { commands } = req.body as { commands: Record<string, { method: string; params?: Rec }> };
+  if (!commands || typeof commands !== 'object') {
+    res.status(400).json({ error: 'Требуется поле commands: { name: { method, params } }' });
+    return;
+  }
+
+  log('batch-api', `команды: ${Object.keys(commands).join(', ')}`);
+
+  // Строим vibecode batch requests из BX24-команд
+  const vibeRequests: Record<string, BatchRequest> = {};
+  const mapperByName: Record<string, ((v: Rec) => Rec) | null> = {};
+
+  for (const [name, cmd] of Object.entries(commands)) {
+    const { method, params } = cmd;
+    const startOffset = (params?.start as number) || 0;
+
+    switch (method) {
+      case 'user.get': {
+        const qp = new URLSearchParams();
+        const filter = ((params?.FILTER ?? params?.filter) as Rec) || {};
+        if (filter.ACTIVE !== undefined) qp.set('filter[ACTIVE]', filter.ACTIVE ? 'Y' : 'N');
+        qp.set('limit', '200');
+        if (startOffset) qp.set('offset', String(startOffset));
+        vibeRequests[name] = { method: 'GET', path: `/v1/users?${qp.toString()}` };
+        mapperByName[name] = mapUser;
+        break;
+      }
+      case 'crm.lead.list': {
+        const rawFilter = ((params?.FILTER ?? params?.filter) as Rec) || {};
+        const mappedFilter = remapFilter(rawFilter, leadFilterKey);
+        vibeRequests[name] = {
+          method: 'POST',
+          path: '/v1/leads/search',
+          body: { filter: mappedFilter, limit: 50, ...(startOffset ? { offset: startOffset } : {}) },
+        };
+        mapperByName[name] = mapLead;
+        break;
+      }
+      case 'crm.status.list': {
+        const rawFilter = ((params?.FILTER ?? params?.filter) as Rec) || {};
+        const mappedFilter = remapFilter(rawFilter, statusFilterKey);
+        const qp = new URLSearchParams();
+        if (mappedFilter.entityId) qp.set('filter[entityId]', String(mappedFilter.entityId));
+        qp.set('limit', '200');
+        vibeRequests[name] = { method: 'GET', path: `/v1/statuses?${qp.toString()}` };
+        mapperByName[name] = mapStatus;
+        break;
+      }
+      case 'crm.category.list': {
+        vibeRequests[name] = { method: 'GET', path: '/v1/deal-categories' };
+        mapperByName[name] = mapCategory;
+        break;
+      }
+      case 'crm.deal.list': {
+        const rawFilter = ((params?.FILTER ?? params?.filter) as Rec) || {};
+        const mappedFilter = remapFilter(rawFilter, dealFilterKey);
+        vibeRequests[name] = {
+          method: 'POST',
+          path: '/v1/deals/search',
+          body: { filter: mappedFilter, limit: 50, ...(startOffset ? { offset: startOffset } : {}) },
+        };
+        mapperByName[name] = mapDeal;
+        break;
+      }
+      default:
+        log('batch-api', `неизвестный метод: ${method} (пропускаем)`);
+    }
+  }
+
+  if (Object.keys(vibeRequests).length === 0) {
+    res.json({ results: {} });
+    return;
+  }
+
+  try {
+    const batchResp = await callVibeBatch(vibeRequests, bearerToken);
+    const results: Record<string, { result: unknown[]; next?: number }> = {};
+
+    for (const [name, vibeResp] of Object.entries(batchResp)) {
+      const mapper = mapperByName[name];
+      const startOff = (commands[name]?.params?.start as number) || 0;
+      const rawItems = (Array.isArray(vibeResp.data) ? vibeResp.data : vibeResp.data != null ? [vibeResp.data] : []) as Rec[];
+      const items = mapper ? rawItems.map(mapper) : rawItems;
+      const hasMore = vibeResp.meta?.hasMore ?? false;
+      const next = hasMore ? startOff + items.length : undefined;
+      log('batch-api', `${name}: ${items.length} записей, hasMore=${hasMore}`);
+      results[name] = { result: items, next };
+    }
+
+    res.json({ results });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log('batch-api', `ОШИБКА — ${msg}`);
+    res.status(500).json({ error: msg });
+  }
 });
 
 // ─── GET /api/healthcheck ─────────────────────────────────────────────────────
