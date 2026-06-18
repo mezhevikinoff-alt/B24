@@ -325,7 +325,7 @@ app.get('/api/debug', (req, res) => {
 });
 
 app.get('/api/healthcheck', (req, res) => {
-  res.json({ ok: true, ts: ts(), vibeAppKeySet: !!VIBE_APP_KEY });
+  res.json({ ok: true, ts: ts(), vibeAppKeySet: !!VIBE_APP_KEY, v: '2' });
 });
 
 app.get('/api/me', (req, res) => {
