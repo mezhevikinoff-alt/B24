@@ -32,8 +32,8 @@ jobs:
           CODE=$(curl -s -w "%{http_code}" -X POST \
             -o /tmp/exec.json \
             --max-time 60 \
-            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
-            -H "X-Api-Key: $VIBE_INFRA_KEY" \
+            -H "Authorization: Bearer $VIBE_APP_KEY" \
+            -H "X-Api-Key: $VIBE_APP_KEY" \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg url "$SOURCE_URL" \
