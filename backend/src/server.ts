@@ -188,17 +188,19 @@ async function callVibeBatch(
 type Rec = Record<string, unknown>;
 
 function mapUser(v: Rec): Rec {
-  const deptId = v.departmentId;
+  // Vibecode returns users in UPPER_CASE (undeclared schema); support both to be safe
+  const deptId = v.UF_DEPARTMENT ?? v.departmentId;
+  const active = v.ACTIVE ?? v.active;
   return {
-    ID: String(v.id ?? ''),
-    NAME: v.name ?? '',
-    LAST_NAME: v.lastName ?? '',
-    SECOND_NAME: v.secondName ?? '',
-    ACTIVE: v.active === true ? 'Y' : 'N',
+    ID: String(v.ID ?? v.id ?? ''),
+    NAME: String(v.NAME ?? v.name ?? ''),
+    LAST_NAME: String(v.LAST_NAME ?? v.lastName ?? ''),
+    SECOND_NAME: String(v.SECOND_NAME ?? v.secondName ?? ''),
+    ACTIVE: typeof active === 'boolean' ? (active ? 'Y' : 'N') : (active ?? 'Y'),
     UF_DEPARTMENT: Array.isArray(deptId) ? deptId : deptId != null ? [deptId] : [],
-    IS_ADMIN: v.isAdmin === true,
-    PERSONAL_PHOTO: v.personalPhoto ?? '',
-    EMAIL: v.email ?? '',
+    IS_ADMIN: v.IS_ADMIN === true || v.isAdmin === true,
+    PERSONAL_PHOTO: v.PERSONAL_PHOTO ?? v.personalPhoto ?? '',
+    EMAIL: v.EMAIL ?? v.email ?? '',
   };
 }
 
@@ -232,11 +234,18 @@ function mapDeal(v: Rec): Rec {
 }
 
 function mapStatus(v: Rec): Rec {
-  return { STATUS_ID: v.statusId ?? '', NAME: v.name ?? '', ENTITY_ID: v.entityId ?? '' };
+  return {
+    STATUS_ID: String(v.STATUS_ID ?? v.statusId ?? ''),
+    NAME: String(v.NAME ?? v.name ?? ''),
+    ENTITY_ID: String(v.ENTITY_ID ?? v.entityId ?? ''),
+  };
 }
 
 function mapCategory(v: Rec): Rec {
-  return { ID: String(v.id ?? ''), NAME: v.name ?? '' };
+  return {
+    ID: String(v.ID ?? v.id ?? ''),
+    NAME: String(v.NAME ?? v.name ?? ''),
+  };
 }
 
 function remapFilter(filter: Rec, mapper: (k: string) => string): Rec {
@@ -377,7 +386,7 @@ app.post('/api/bx', async (req, res) => {
       case 'user.get': {
         const qp = new URLSearchParams();
         const filter = ((params?.FILTER ?? params?.filter) as Rec) || {};
-        if (filter.ACTIVE !== undefined) qp.set('filter[ACTIVE]', filter.ACTIVE ? 'Y' : 'N');
+        if (filter.ACTIVE !== undefined) qp.set('filter[active]', filter.ACTIVE ? 'Y' : 'N');
         if (params?.ID) qp.set('filter[id]', String(params.ID));
         qp.set('limit', '200');
         if (startOffset) qp.set('offset', String(startOffset));
