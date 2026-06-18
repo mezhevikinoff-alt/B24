@@ -33,8 +33,8 @@ jobs:
           CODE=$(curl -s -w "%{http_code}" -X POST \
             -o /tmp/deploy.json \
             --max-time 60 \
-            -H "Authorization: Bearer $VIBE_APP_KEY" \
-            -H "X-Api-Key: $VIBE_APP_KEY" \
+            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
+            -H "X-Api-Key: $VIBE_INFRA_KEY" \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg url "$SOURCE_URL" \
@@ -75,8 +75,8 @@ jobs:
         run: |
           echo "=== POST repair ==="
           curl -s -X POST \
-            -H "Authorization: Bearer $VIBE_APP_KEY" \
-            -H "X-Api-Key: $VIBE_APP_KEY" \
+            -H "Authorization: Bearer $VIBE_INFRA_KEY" \
+            -H "X-Api-Key: $VIBE_INFRA_KEY" \
             "https://vibecode.bitrix24.tech/v1/infra/servers/3a540f54-003c-407e-8e20-744142ee12be/repair" \
             | jq . 2>/dev/null || echo "repair call done"
 
