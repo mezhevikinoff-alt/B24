@@ -47,6 +47,7 @@ jobs:
             -o /tmp/deploy.json \
             --max-time 60 \
             -H "X-Api-Key: $VIBE_APP_KEY" \
+            -H "X-Skip-Source-Snapshot: github-actions-ci-deploy" \
             -H "Content-Type: application/json" \
             -d "$(jq -n \
               --arg url "$SOURCE_URL" \
