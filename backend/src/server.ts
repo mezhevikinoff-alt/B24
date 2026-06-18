@@ -87,7 +87,7 @@ function scheduleVibecodeRequest<T>(fn: () => Promise<T>): Promise<T> {
 
 async function callVibecode(
   url: string,
-  opts: { method?: string; body?: unknown; bearerToken: string },
+  opts: { method?: string; body?: unknown },
   attempt = 1,
 ): Promise<VibeResponse> {
   return scheduleVibecodeRequest(() => callVibecodeDirect(url, opts, attempt));
@@ -95,7 +95,7 @@ async function callVibecode(
 
 async function callVibecodeDirect(
   url: string,
-  opts: { method?: string; body?: unknown; bearerToken: string },
+  opts: { method?: string; body?: unknown },
   attempt: number,
 ): Promise<VibeResponse> {
   const method = opts.method || 'GET';
@@ -106,8 +106,7 @@ async function callVibecodeDirect(
     method,
     headers: {
       'Content-Type': 'application/json',
-      'X-Api-Key': VIBE_APP_KEY,                    // Rule 1: ключ приложения
-      'Authorization': `Bearer ${opts.bearerToken}`, // Rule 2: токен пользователя
+      'X-Api-Key': VIBE_APP_KEY, // единственный нужный заголовок для Вайбкод API
     },
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
@@ -160,7 +159,6 @@ interface BatchVibeResponse {
 
 async function callVibeBatch(
   requests: Record<string, BatchRequest>,
-  bearerToken: string,
 ): Promise<Record<string, VibeResponse>> {
   log('batch', `→ batch из ${Object.keys(requests).length} запросов: ${Object.keys(requests).join(', ')}`);
   const t0 = Date.now();
@@ -170,7 +168,6 @@ async function callVibeBatch(
     headers: {
       'Content-Type': 'application/json',
       'X-Api-Key': VIBE_APP_KEY,
-      'Authorization': `Bearer ${bearerToken}`,
     },
     body: JSON.stringify({ requests }),
   });
@@ -465,7 +462,7 @@ app.post('/api/batch', async (req, res) => {
   }
 
   try {
-    const batchResp = await callVibeBatch(vibeRequests, bearerToken);
+    const batchResp = await callVibeBatch(vibeRequests);
     const results: Record<string, { result: unknown[]; next?: number }> = {};
 
     for (const [name, vibeResp] of Object.entries(batchResp)) {
@@ -577,7 +574,7 @@ app.post('/api/bx', async (req, res) => {
           return;
         }
 
-        const vResp = await callVibecode(vibeUrl, { method: vibeMethod, bearerToken });
+        const vResp = await callVibecode(vibeUrl, { method: vibeMethod });
         const rawUsers = (Array.isArray(vResp.data) ? vResp.data : []) as Rec[];
         const users = rawUsers.map(mapUser);
 
@@ -648,7 +645,7 @@ app.post('/api/bx', async (req, res) => {
         vibeUrl = `${VIBE_API}/workday/status`;
         vibeMethod = 'GET';
 
-        const vResp = await callVibecode(vibeUrl, { method: vibeMethod, bearerToken });
+        const vResp = await callVibecode(vibeUrl, { method: vibeMethod });
         log('bx', `timeman: ответ=${JSON.stringify(vResp.data).slice(0, 200)}`);
         // Возвращаем пустой результат — исторические данные timeman не поддерживаются API
         res.json({ result: null, raw: vResp.data });
@@ -666,7 +663,6 @@ app.post('/api/bx', async (req, res) => {
     const vResp = await callVibecode(vibeUrl!, {
       method: vibeMethod!,
       body: vibeBody,
-      bearerToken,
     });
 
     const rawItems = (Array.isArray(vResp.data) ? vResp.data : vResp.data != null ? [vResp.data] : []) as Rec[];
