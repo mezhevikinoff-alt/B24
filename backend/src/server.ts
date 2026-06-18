@@ -248,37 +248,52 @@ function mapCategory(v: Rec): Rec {
   };
 }
 
-function remapFilter(filter: Rec, mapper: (k: string) => string): Rec {
-  const out: Rec = {};
-  for (const [k, v] of Object.entries(filter)) out[mapper(k)] = v;
-  return out;
+// Converts Bitrix24-style filter { '>=DATE_CREATE': '2026-06-01' }
+// to Vibecode MongoDB-style { 'createdAt': { '$gte': '2026-06-01' } }
+const BX_OP_TO_MONGO: Record<string, string> = {
+  '>=': '$gte', '<=': '$lte', '>': '$gt', '<': '$lt', '!': '$ne',
+};
+
+function convertFilter(filter: Rec, fieldMapper: (k: string) => string): Rec {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(filter)) {
+    const m = k.match(/^(>=|<=|>|<|!)/);
+    const op = m ? m[0] : '';
+    const field = fieldMapper(k.slice(op.length));
+    if (!op) {
+      out[field] = Array.isArray(v) ? { $in: v } : v;
+    } else {
+      const mongo = BX_OP_TO_MONGO[op] ?? op;
+      const cur = out[field];
+      if (cur && typeof cur === 'object' && !Array.isArray(cur)) {
+        (cur as Record<string, unknown>)[mongo] = v;
+      } else {
+        out[field] = { [mongo]: v };
+      }
+    }
+  }
+  return out as Rec;
 }
 
-function leadFilterKey(k: string): string {
-  const m = k.match(/^(>=|<=|>|<|%|!)/);
-  const op = m ? m[0] : '';
-  const field = k.slice(op.length);
+function leadField(k: string): string {
   const map: Record<string, string> = {
     DATE_CREATE: 'createdAt', DATE_CONVERT: 'dateClosed',
     STATUS_ID: 'stageId', STAGE_ID: 'stageId',
     ASSIGNED_BY_ID: 'assignedById', SOURCE_ID: 'sourceId',
     ID: 'id', NAME: 'name', TITLE: 'title',
   };
-  return op + (map[field] ?? field);
+  return map[k] ?? k;
 }
 
-function dealFilterKey(k: string): string {
-  const m = k.match(/^(>=|<=|>|<|%|!)/);
-  const op = m ? m[0] : '';
-  const field = k.slice(op.length);
+function dealField(k: string): string {
   const map: Record<string, string> = {
     LEAD_ID: 'leadId', CATEGORY_ID: 'categoryId',
     ASSIGNED_BY_ID: 'assignedById', DATE_CREATE: 'createdAt', ID: 'id',
   };
-  return op + (map[field] ?? field);
+  return map[k] ?? k;
 }
 
-function statusFilterKey(k: string): string {
+function statusField(k: string): string {
   const map: Record<string, string> = { ENTITY_ID: 'entityId', STATUS_ID: 'statusId' };
   return map[k] ?? k;
 }
@@ -412,14 +427,14 @@ app.post('/api/bx', async (req, res) => {
         const rawFilter = ((params?.FILTER ?? params?.filter) as Rec) || {};
         vibeUrl = `${VIBE_API}/leads/search`;
         vibeMethod = 'POST';
-        vibeBody = { filter: remapFilter(rawFilter, leadFilterKey), limit: 50, ...(startOffset ? { offset: startOffset } : {}) };
+        vibeBody = { filter: convertFilter(rawFilter, leadField), limit: 1000, ...(startOffset ? { offset: startOffset } : {}) };
         mapper = mapLead;
         break;
       }
 
       case 'crm.status.list': {
         const rawFilter = ((params?.FILTER ?? params?.filter) as Rec) || {};
-        const mapped = remapFilter(rawFilter, statusFilterKey);
+        const mapped = convertFilter(rawFilter, statusField);
         const qp = new URLSearchParams();
         if (mapped.entityId) qp.set('filter[entityId]', String(mapped.entityId));
         qp.set('limit', '200');
@@ -440,7 +455,7 @@ app.post('/api/bx', async (req, res) => {
         const rawFilter = ((params?.FILTER ?? params?.filter) as Rec) || {};
         vibeUrl = `${VIBE_API}/deals/search`;
         vibeMethod = 'POST';
-        vibeBody = { filter: remapFilter(rawFilter, dealFilterKey), limit: 50, ...(startOffset ? { offset: startOffset } : {}) };
+        vibeBody = { filter: convertFilter(rawFilter, dealField), limit: 1000, ...(startOffset ? { offset: startOffset } : {}) };
         mapper = mapDeal;
         break;
       }
@@ -452,13 +467,16 @@ app.post('/api/bx', async (req, res) => {
         log('bx', `timeman: ${userIds.length} пользователей, ${dateFrom}—${dateTo}`);
 
         try {
-          const qp = new URLSearchParams();
-          if (dateFrom) qp.set('filter[date][from]', dateFrom);
-          if (dateTo) qp.set('filter[date][to]', dateTo);
-          for (const uid of userIds) qp.append('filter[userId][]', uid);
-          qp.set('limit', '1000');
+          const timeFilter: Record<string, unknown> = {};
+          if (dateFrom) timeFilter['date'] = { ...((timeFilter['date'] as object) || {}), $gte: dateFrom };
+          if (dateTo) timeFilter['date'] = { ...((timeFilter['date'] as object) || {}), $lte: dateTo };
+          if (userIds.length > 0) timeFilter['userId'] = { $in: userIds };
 
-          const vr = await callVibecode(`${VIBE_API}/timeman/entries?${qp}`, { method: 'GET', bearerToken });
+          const vr = await callVibecode(`${VIBE_API}/timeman/entries/search`, {
+            method: 'POST',
+            body: { filter: timeFilter, limit: 5000 },
+            bearerToken,
+          });
           const entries = (Array.isArray(vr.data) ? vr.data : []) as Rec[];
           log('bx', `timeman: ${entries.length} записей, пример=${JSON.stringify(entries[0] ?? null).slice(0, 150)}`);
 
@@ -523,7 +541,7 @@ app.post('/api/batch', async (req, res) => {
       case 'user.get': {
         const qp = new URLSearchParams();
         const f = ((params?.FILTER ?? params?.filter) as Rec) || {};
-        if (f.ACTIVE !== undefined) qp.set('filter[ACTIVE]', f.ACTIVE ? 'Y' : 'N');
+        if (f.ACTIVE !== undefined) qp.set('filter[active]', f.ACTIVE ? 'Y' : 'N');
         qp.set('limit', '200');
         if (offset) qp.set('offset', String(offset));
         vibeRequests[name] = { method: 'GET', path: `/v1/users?${qp}` };
@@ -531,12 +549,12 @@ app.post('/api/batch', async (req, res) => {
         break;
       }
       case 'crm.lead.list':
-        vibeRequests[name] = { method: 'POST', path: '/v1/leads/search', body: { filter: remapFilter((params?.FILTER ?? params?.filter ?? {}) as Rec, leadFilterKey), limit: 50, ...(offset ? { offset } : {}) } };
+        vibeRequests[name] = { method: 'POST', path: '/v1/leads/search', body: { filter: convertFilter((params?.FILTER ?? params?.filter ?? {}) as Rec, leadField), limit: 1000, ...(offset ? { offset } : {}) } };
         mapperByName[name] = mapLead;
         break;
       case 'crm.status.list': {
         const qp = new URLSearchParams();
-        const mf = remapFilter((params?.FILTER ?? params?.filter ?? {}) as Rec, statusFilterKey);
+        const mf = convertFilter((params?.FILTER ?? params?.filter ?? {}) as Rec, statusField);
         if (mf.entityId) qp.set('filter[entityId]', String(mf.entityId));
         qp.set('limit', '200');
         vibeRequests[name] = { method: 'GET', path: `/v1/statuses?${qp}` };
@@ -548,7 +566,7 @@ app.post('/api/batch', async (req, res) => {
         mapperByName[name] = mapCategory;
         break;
       case 'crm.deal.list':
-        vibeRequests[name] = { method: 'POST', path: '/v1/deals/search', body: { filter: remapFilter((params?.FILTER ?? params?.filter ?? {}) as Rec, dealFilterKey), limit: 50, ...(offset ? { offset } : {}) } };
+        vibeRequests[name] = { method: 'POST', path: '/v1/deals/search', body: { filter: convertFilter((params?.FILTER ?? params?.filter ?? {}) as Rec, dealField), limit: 1000, ...(offset ? { offset } : {}) } };
         mapperByName[name] = mapDeal;
         break;
       default:
