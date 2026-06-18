@@ -779,12 +779,16 @@ process.on('uncaughtException', (err) => {
 
 console.log(`[${ts()}] === ОРК Статистика запускается ===`);
 console.log(`[${ts()}] PORT=${PORT}, NODE_ENV=${process.env.NODE_ENV || 'development'}`);
-console.log(`[${ts()}] VIBE_APP_KEY: ${VIBE_APP_KEY ? '[УСТАНОВЛЕН, len=' + VIBE_APP_KEY.length + ']' : '[ОТСУТСТВУЕТ — запросы к Вайбкод API не пройдут]'}`);
+console.log(`[${ts()}] VIBE_APP_KEY: ${VIBE_APP_KEY ? '[УСТАНОВЛЕН, len=' + VIBE_APP_KEY.length + ']' : '[ОТСУТСТВУЕТ]'}`);
 console.log(`[${ts()}] VIBE_API: ${VIBE_API}`);
 console.log(`[${ts()}] BX24_DOMAIN: ${BX24_DOMAIN}`);
-console.log(`[${ts()}] Правила авторизации:`);
-console.log(`[${ts()}]   X-Api-Key: VIBE_APP_KEY (ключ приложения, всегда)`);
-console.log(`[${ts()}]   Authorization: Bearer <X-Vibe-Authorization> (токен пользователя от Gateway)`);
+
+if (!VIBE_APP_KEY) {
+  console.error(`[${ts()}] КРИТИЧЕСКАЯ ОШИБКА: переменная окружения VIBE_APP_KEY не задана!`);
+  console.error(`[${ts()}] Без неё все запросы к Вайбкод API вернут "API key required".`);
+  console.error(`[${ts()}] Добавьте секрет VIBE_APP_KEY в Settings → Secrets → Actions репозитория GitHub.`);
+  process.exit(1);
+}
 
 app.listen(PORT, () => {
   console.log(`[${ts()}] === Сервер запущен на порту ${PORT} ===`);
